@@ -1,19 +1,15 @@
 # Coalyx CLI
 
-A high-performance, multi-task AI Chat Terminal featuring **Adaptive Uncertainty-Aware Reasoning**. Coalyx isn't just another chat interface; it's an intelligent agent framework designed for complex problem solving and autonomous task execution.
+A lightweight, terminal-based AI chat application designed for seamless interactions with multiple LLM providers. Much like the Ollama CLI, Coalyx provides a clean and distraction-free environment for chatting directly from your terminal. It is built to be a smart conversational assistant rather than an autonomous coding agent.
 
 ---
 
 ## Key Features
 
-### Intelligent Adaptive Reasoning
-Coalyx utilizes a sophisticated reasoning engine that evaluates complex queries through multiple internal perspectives. It autonomously identifies potential inconsistencies and performs real-time self-correction to ensure the most reliable and accurate output for mission-critical tasks.
-
-### High-Fidelity Session Memory
-Maintain perfect project awareness through an advanced context management architecture. Coalyx intelligently monitors interaction density and employs specialized state-compaction techniques to preserve long-term project knowledge while staying within model processing limits.
-
-### Unified Extension Ecosystem
-Boost your productivity with native support for system-level tools, real-time web intelligence, and external service orchestration via the Model Context Protocol (MCP). The modular skill system allows for seamless injection of custom domain-specific expertise.
+- **Multi-Provider Support**: Chat with models from OpenAI, Anthropic, Google Gemini, and local models via Ollama.
+- **Smart Context Management**: Automatically manages long conversations to keep your session smooth and responsive without exceeding token limits.
+- **Tool Integration**: Enhances conversations with built-in utilities like web searching, math evaluation, and file reading.
+- **Customizable Experience**: Easily switch between models, load custom prompts, and configure the chat environment directly through slash commands.
 
 ---
 

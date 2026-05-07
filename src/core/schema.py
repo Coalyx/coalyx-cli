@@ -59,7 +59,7 @@ class Message(BaseModel):
 class ModelConfig(BaseModel):
     model_name: str
     temperature: float = 0.7
-    max_tokens: int = 2048
+    max_tokens: int = 16384
 
 
 class GenerationResult(BaseModel):

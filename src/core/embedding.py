@@ -1,20 +1,46 @@
 import os
-from typing import List
+import hashlib
+import logging
+from typing import Dict, List
 from google import genai
 from src.core.schema import EmbeddingResult, ConsistencyResult
 import numpy as np
 
+logger = logging.getLogger(__name__)
+
+# In-memory embedding cache keyed by SHA-256 of input text.
+# Reset each session (no persistence).
+_embedding_cache: Dict[str, List[float]] = {}
+
+
 def cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
-    """Calculate cosine similarity between two vectors."""
+    """Calculate cosine similarity between two vectors.
+
+    Returns 0.0 if either vector has zero magnitude (guard against
+    NaN / ZeroDivisionError from degenerate embeddings).
+    """
     v1 = np.array(vec1)
     v2 = np.array(vec2)
-    return float(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
+    norm1 = np.linalg.norm(v1)
+    norm2 = np.linalg.norm(v2)
+    if norm1 == 0.0 or norm2 == 0.0:
+        return 0.0
+    return float(np.dot(v1, v2) / (norm1 * norm2))
 
 def get_embedding(text: str) -> EmbeddingResult:
-    """
-    Get text embedding using Gemini's embedding model.
+    """Get text embedding using Gemini's embedding model.
+
+    Results are cached by content hash to avoid redundant API calls
+    when candidates share identical text.
+
     Note: Requires GEMINI_API_KEY environment variable to be set.
     """
+    # Check cache first
+    cache_key = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    if cache_key in _embedding_cache:
+        logger.debug("Embedding cache hit for %s…", cache_key[:12])
+        return EmbeddingResult(vector=_embedding_cache[cache_key], tokens_used=0)
+
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise ValueError("GEMINI_API_KEY is not set. Please configure it via '/config'")
@@ -30,6 +56,8 @@ def get_embedding(text: str) -> EmbeddingResult:
         )
         vector = result.embeddings[0].values
         tokens_used = len(formatted_text) // 4
+        # Store in cache
+        _embedding_cache[cache_key] = vector
         return EmbeddingResult(vector=vector, tokens_used=tokens_used)
     except Exception as e:
         raise RuntimeError(f"Embedding failed: {str(e)}")

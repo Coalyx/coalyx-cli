@@ -173,6 +173,9 @@ def main(
 
     pipeline_mode = PipelineMode.ADAPTIVE if mode.lower() == "adaptive" else PipelineMode.INSTANT
     model_config = ModelConfig(model_name=model, temperature=temperature)
+    # Ollama runs locally — no billing, so allow generous output length
+    if model.lower().startswith("ollama/"):
+        model_config.max_tokens = 8192
     context_limit = _get_context_limit(model)
     monitor = SessionMonitor(max_context_length=context_limit)
     session_id = generate_session_id()

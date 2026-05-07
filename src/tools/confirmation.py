@@ -99,12 +99,10 @@ def request_confirmation(
         return True
 
     if _confirmation_callback is None:
-        # No callback configured — fail-open for backwards compat during
-        # testing, but log a warning so it's visible.
         logger.warning(
-            "No confirmation callback configured; auto-approving '%s'",
+            "No confirmation callback configured; BLOCKING '%s' (fail-closed)",
             tool_name,
         )
-        return True
+        return False
 
     return _confirmation_callback(tool_name, kwargs, level)

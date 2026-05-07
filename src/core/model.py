@@ -1,8 +1,6 @@
 import time
 import logging
-import json
 import re
-import uuid
 from typing import List, Optional
 
 import litellm
@@ -31,6 +29,7 @@ def generate_response(
     max_retries: int = DEFAULT_MAX_RETRIES,
     extra_body: Optional[dict] = None,
     tools: Optional[list] = None,
+    response_format: Optional[dict] = None,
 ) -> List[GenerationResult]:
     """Generate response(s) using litellm with automatic retry on rate limits.
 
@@ -48,6 +47,8 @@ def generate_response(
         max_retries: Maximum retry attempts on rate limit errors.
         extra_body: Optional extra payload passed directly to the provider
             (e.g. ``{"think": False}`` to disable Ollama thinking tokens).
+        response_format: Optional response format hint (e.g.
+            ``{"type": "json_object"}`` to enforce JSON mode).
 
     Returns:
         List of GenerationResult.
@@ -55,6 +56,12 @@ def generate_response(
     if tools and model_name.lower().startswith("ollama/"):
         model_name = "ollama_chat/" + model_name[len("ollama/"):]
         logger.info("Auto-upgraded to %s for tool support", model_name)
+
+    # Ollama: suppress model-side thinking tokens globally.
+    if model_name.lower().startswith(("ollama/", "ollama_chat/")):
+        if extra_body is None:
+            extra_body = {}
+        extra_body.setdefault("think", False)
 
     formatted = []
     for m in messages:
@@ -74,7 +81,7 @@ def generate_response(
         try:
             return _call_with_retry(
                 formatted, model_name, temperature, max_tokens, n, max_retries,
-                extra_body=extra_body, tools=tools,
+                extra_body=extra_body, tools=tools, response_format=response_format,
             )
         except RuntimeError:
             pass
@@ -82,12 +89,12 @@ def generate_response(
     if n > 1:
         return _sequential_generate(
             formatted, model_name, temperature, max_tokens, n, max_retries,
-            extra_body=extra_body, tools=tools,
+            extra_body=extra_body, tools=tools, response_format=response_format,
         )
 
     return _call_with_retry(
         formatted, model_name, temperature, max_tokens, 1, max_retries,
-        extra_body=extra_body, tools=tools,
+        extra_body=extra_body, tools=tools, response_format=response_format,
     )
 
 
@@ -100,6 +107,7 @@ def _call_with_retry(
     max_retries: int,
     extra_body: Optional[dict] = None,
     tools: Optional[list] = None,
+    response_format: Optional[dict] = None,
 ) -> List[GenerationResult]:
     """Execute a single litellm call with exponential backoff retry.
 
@@ -130,6 +138,8 @@ def _call_with_retry(
         call_kwargs["extra_body"] = extra_body
     if tools:
         call_kwargs["tools"] = tools
+    if response_format:
+        call_kwargs["response_format"] = response_format
 
     for attempt in range(max_retries + 1):
         start = time.time()
@@ -175,6 +185,7 @@ def _sequential_generate(
     max_retries: int,
     extra_body: Optional[dict] = None,
     tools: Optional[list] = None,
+    response_format: Optional[dict] = None,
 ) -> List[GenerationResult]:
     """Generate n candidates via sequential single calls with spacing.
 
@@ -202,7 +213,7 @@ def _sequential_generate(
 
         batch = _call_with_retry(
             formatted_messages, model_name, temperature, max_tokens, 1, max_retries,
-            extra_body=extra_body, tools=tools,
+            extra_body=extra_body, tools=tools, response_format=response_format,
         )
         results.extend(batch)
 
@@ -236,51 +247,6 @@ def _parse_response(response, duration: float) -> List[GenerationResult]:
                     name=tc.function.name,
                     arguments=tc.function.arguments
                 ))
-        elif content and '\"name\"' in content and '\"arguments\"' in content:
-            # Fallback: Extract tool calls from raw JSON in content (common with Ollama/Small models)
-            try:
-
-                try:
-                    parsed_json = json.loads(content.strip())
-                    if isinstance(parsed_json, dict) and "name" in parsed_json and "arguments" in parsed_json:
-                        args = parsed_json["arguments"]
-                        args_str = json.dumps(args) if isinstance(args, dict) else str(args)
-                        parsed_tools = [ToolCall(
-                            id=f"call_{uuid.uuid4().hex[:8]}",
-                            name=str(parsed_json["name"]),
-                            arguments=args_str
-                        )]
-                        content = ""
-                except json.JSONDecodeError:
-                    # JSON is likely truncated. Extract tool name and arguments via regex.
-                    name_match = re.search(r'"name"\s*:\s*"([^"]+)"', content)
-                    args_match = re.search(r'"arguments"\s*:\s*\{(.*)', content, re.DOTALL)
-                    if name_match and args_match:
-                        tool_name = name_match.group(1)
-                        args_raw = "{" + args_match.group(1)
-                        open_braces = args_raw.count("{") - args_raw.count("}")
-                        if open_braces > 0:
-                            args_raw += "}" * open_braces
-                        
-                        code_match = re.search(r'"code"\s*:\s*"(.*)', args_raw, re.DOTALL)
-                        if code_match:
-                            raw_code = code_match.group(1)
-                            raw_code = raw_code.rstrip("\\")
-                            if raw_code.endswith('"'):
-                                raw_code = raw_code[:-1]
-                            raw_code = raw_code.rstrip().rstrip("}").rstrip().rstrip('"')
-                            args_str = json.dumps({"code": raw_code})
-                        else:
-                            args_str = args_raw
-
-                        parsed_tools = [ToolCall(
-                            id=f"call_{uuid.uuid4().hex[:8]}",
-                            name=tool_name,
-                            arguments=args_str
-                        )]
-                        content = ""
-            except Exception:
-                pass
 
         results.append(
             GenerationResult(

@@ -10,7 +10,7 @@ import json
 import rich
 
 STAGE1_CANDIDATES = 3
-STAGE1_TEMPERATURE = 0.7
+STAGE1_TEMPERATURE = 0.5
 STAGE2_TEMPERATURE = 0.9
 CERTAINTY_THRESHOLD = 0.75
 MAX_TOOL_ROUNDS = 10
@@ -46,10 +46,30 @@ SELF_DOUBT_PROMPT = (
     "5. Note important caveats if any."
 )
 
+# ---------------------------------------------------------------------------
+# Lexical fallback for when embedding API is unavailable
+# ---------------------------------------------------------------------------
 
-def _is_ollama(model_name: str) -> bool:
-    """Return True if the model is served via Ollama."""
-    return model_name.lower().startswith("ollama/")
+def _lexical_jaccard(text_a: str, text_b: str) -> float:
+    """Jaccard similarity on lowercased word tokens."""
+    words_a = set(text_a.lower().split())
+    words_b = set(text_b.lower().split())
+    if not words_a and not words_b:
+        return 1.0
+    intersection = words_a & words_b
+    union = words_a | words_b
+    return len(intersection) / len(union) if union else 1.0
+
+
+def _lexical_group_consistency(texts: list) -> float:
+    """Average pairwise Jaccard similarity — crude proxy for embedding consistency."""
+    if len(texts) <= 1:
+        return 1.0
+    sims = []
+    for i in range(len(texts)):
+        for j in range(i + 1, len(texts)):
+            sims.append(_lexical_jaccard(texts[i], texts[j]))
+    return sum(sims) / len(sims) if sims else 1.0
 
 
 def run_instant_pipeline(
@@ -110,9 +130,6 @@ def run_adaptive_pipeline(
         "stage2_triggered": False,
     }
 
-    # Suppress built-in thinking for Ollama — Coalyx's pipeline handles reasoning.
-    ollama_no_think = {"think": False} if _is_ollama(config.model_name) else None
-
     rich.print("  [dim]◈ Sampling internal reasoning paths...[/dim]")
     # Note: Tools are intentionally NOT passed here. Stage 1 candidates are
     # only used for semantic uncertainty measurement, not for execution.
@@ -126,7 +143,6 @@ def run_adaptive_pipeline(
             temperature=STAGE1_TEMPERATURE,
             max_tokens=config.max_tokens,
             n=1,
-            extra_body=ollama_no_think,
         )
         candidates.extend(batch)
 
@@ -144,11 +160,16 @@ def run_adaptive_pipeline(
         debug_info["representative_idx"] = consistency_result.representative_idx
         debug_info["minority_idx"] = consistency_result.minority_idx
     except Exception as e:
-        consistency = 0.0
+        # Embedding failed — use lexical overlap as a crude proxy instead
+        # of defaulting to 0.0 (which would falsely trigger heavy
+        # uncertainty for every transient API failure).
+        consistency = _lexical_group_consistency(texts)
         debug_info["embedding_error"] = str(e)
+        debug_info["consistency_method"] = "lexical_fallback"
+        rich.print(f"  [dim yellow]◈ Embedding failed, using lexical fallback (score={consistency:.2f})[/dim yellow]")
         # Create a dummy result for fallback
         from src.core.schema import ConsistencyResult
-        consistency_result = ConsistencyResult(score=0.0)
+        consistency_result = ConsistencyResult(score=consistency)
 
     debug_info["consistency"] = consistency
 
@@ -203,7 +224,6 @@ def run_adaptive_pipeline(
         temperature=STAGE2_TEMPERATURE,
         max_tokens=config.max_tokens,
         n=1,
-        extra_body=ollama_no_think,
         tools=tools,
     )[0]
 
@@ -239,8 +259,11 @@ def run_pipeline(
             res, debug = run_adaptive_pipeline(current_messages, config, tools if tools else None)
         
         final_debug.update(debug)
+
+        if isinstance(res, ClarificationRequest):
+            return res, final_debug
         
-        if res.tool_calls:
+        if getattr(res, "tool_calls", None):
             assistant_msg = Message(role=Role.ASSISTANT, content=res.content or "", tool_calls=res.tool_calls)
             current_messages.append(assistant_msg)
             messages.append(assistant_msg)
@@ -252,16 +275,28 @@ def run_pipeline(
                 except:
                     args = {}
                 output = execute_tool(tc.name, args)
+
+                # Determine execution status from output
+                output_str = str(output)
+                if output_str.startswith("Error"):
+                    status = "error"
+                elif output_str.startswith("Tool '") and "denied" in output_str:
+                    status = "denied"
+                elif output_str.startswith("Security error"):
+                    status = "denied"
+                else:
+                    status = "success"
                 
                 final_debug["tool_logs"].append(ToolCallLog(
                     timestamp=datetime.now(timezone.utc).isoformat(),
                     tool_name=tc.name,
                     arguments=args,
-                    status="success",
-                    output_preview=str(output)[:500],
+                    status=status,
+                    output_preview=output_str[:500],
+                    approved_by_user=(status != "denied"),
                 ))
                 
-                tool_msg = Message(role=Role.TOOL, content=str(output), tool_call_id=tc.id)
+                tool_msg = Message(role=Role.TOOL, content=output_str, tool_call_id=tc.id)
                 current_messages.append(tool_msg)
                 messages.append(tool_msg)
         else:

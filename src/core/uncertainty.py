@@ -25,16 +25,7 @@ Classify uncertainty into the following flags if they apply:
 
 For each conflict or unknown, specify its severity (low, medium, high) and whether it can be resolved by asking the user, researching, or verifying with a tool.
 
-Then choose EXACTLY ONE recommended_action from this list:
-- answer
-- answer_with_caveats
-- ask_user
-- research
-- verify_with_tool
-- adversarial_review
-- refuse_or_defer
-
-Output schema must be exactly this JSON structure:
+You MUST output exactly this JSON structure (no markdown fences, no extra text):
 {
   "total_score": 0.5,
   "semantic_agreement": 0.8,
@@ -58,10 +49,15 @@ Output schema must be exactly this JSON structure:
   "research_questions": ["..."],
   "clarification_questions": ["..."],
   "computable_checks": ["..."],
-  "risk_flags": ["..."],
-  "recommended_action": "answer"
+  "risk_flags": ["..."]
 }
+
+CRITICAL: Do NOT include a "recommended_action" field. Only provide the facts above.
 """
+
+# JSON mode hint — supported by both Gemini and Ollama via LiteLLM.
+_JSON_RESPONSE_FORMAT = {"type": "json_object"}
+
 
 def analyze_uncertainty(
     messages: List[Message],
@@ -69,18 +65,22 @@ def analyze_uncertainty(
     consistency: float,
     config: ModelConfig
 ) -> UncertaintyReport:
-    """Analyze generated candidates to produce an UncertaintyReport."""
+    """Analyze generated candidates to produce an UncertaintyReport.
+
+    Uses JSON mode to enforce structured output from the LLM.
+    Falls back to a safe default report if parsing fails.
+    """
     
-    unique_ans = "\\n\\n---\\n\\n".join(
-        f"Candidate {i + 1}:\\n{t.content}" for i, t in enumerate(candidates)
+    unique_ans = "\n\n---\n\n".join(
+        f"Candidate {i + 1}:\n{t.content}" for i, t in enumerate(candidates)
     )
     
     analyzer_msg = Message(
         role=Role.USER,
         content=(
-            f"{ANALYZER_PROMPT}\\n\\n"
-            f"Semantic agreement score (cosine similarity): {consistency:.2f}\\n\\n"
-            f"CANDIDATES:\\n{unique_ans}"
+            f"{ANALYZER_PROMPT}\n\n"
+            f"Semantic agreement score (cosine similarity): {consistency:.2f}\n\n"
+            f"CANDIDATES:\n{unique_ans}"
         )
     )
     
@@ -92,54 +92,108 @@ def analyze_uncertainty(
             
     context_msg = Message(
         role=Role.USER,
-        content=f"Original Query Context:\\n{last_user_query}"
+        content=f"Original Query Context:\n{last_user_query}"
     )
     
-    res = generate_response(
-        messages=[context_msg, analyzer_msg],
-        model_name=config.model_name,
-        temperature=0.1,  # Low temp for structured extraction
-        max_tokens=config.max_tokens,
-        n=1
-    )[0]
+    try:
+        res = generate_response(
+            messages=[context_msg, analyzer_msg],
+            model_name=config.model_name,
+            temperature=0.1,  # Low temp for structured extraction
+            max_tokens=config.max_tokens,
+            n=1,
+            response_format=_JSON_RESPONSE_FORMAT,
+        )[0]
+    except Exception as e:
+        logger.warning("Analyzer LLM call failed: %s", e)
+        return _fallback_report(consistency)
     
     try:
         content = res.content.strip()
+        # Belt-and-suspenders: strip markdown fences if model ignores JSON mode
         if content.startswith("```json"):
             content = content[7:]
+        if content.startswith("```"):
+            content = content[3:]
         if content.endswith("```"):
             content = content[:-3]
+
         data = json.loads(content.strip())
+
+        # Remove recommended_action if the LLM smuggled one in anyway —
+        # we don't trust it to pick actions.
+        data.pop("recommended_action", None)
+
         report = UncertaintyReport(**data)
+        # Override with the actual embedding-based score
         report.semantic_agreement = consistency
         return report
     except Exception as e:
-        logger.warning(f"Failed to parse UncertaintyReport JSON: {e}")
-        action = UncertaintyAction.ADVERSARIAL_REVIEW if consistency < 0.75 else UncertaintyAction.ANSWER
-        return UncertaintyReport(
-            semantic_agreement=consistency,
-            total_score=1.0 - consistency,
-            recommended_action=action
-        )
+        logger.warning("Failed to parse UncertaintyReport JSON: %s", e)
+        return _fallback_report(consistency)
+
+
+def _fallback_report(consistency: float) -> UncertaintyReport:
+    """Build a safe fallback report when the analyzer fails.
+
+    Uses consistency alone: low consistency → adversarial review,
+    high consistency → answer directly.
+    """
+    action = (
+        UncertaintyAction.ADVERSARIAL_REVIEW
+        if consistency < 0.75
+        else UncertaintyAction.ANSWER
+    )
+    return UncertaintyReport(
+        semantic_agreement=consistency,
+        total_score=1.0 - consistency,
+        recommended_action=action,
+    )
+
 
 def decide_action(report: UncertaintyReport) -> UncertaintyAction:
-    """Rule-based decision layer to choose the best action."""
+    """Deterministic rule engine to choose the best action.
+
+    Priority order (highest to lowest):
+    1. Safety/permission risk → ASK_USER
+    2. User intent ambiguity with clarification questions → ASK_USER
+    3. High-severity claim conflicts → ADVERSARIAL_REVIEW
+    4. Researchable unknowns with research questions → RESEARCH
+    5. Computable checks available → VERIFY_WITH_TOOL
+    6. Low uncertainty (score ≤ 0.3 or agreement ≥ 0.85) → ANSWER
+    7. Default → ANSWER_WITH_CAVEATS
+
+    The LLM's ``recommended_action`` field is intentionally ignored.
+    """
+    # PRIORITY 1: Safety risks are always escalated to user
     if report.risk_flags:
         return UncertaintyAction.ASK_USER
-        
-    if report.clarification_questions and any(u.kind == "user_intent" for u in report.unknowns):
+
+    # PRIORITY 2: User intent is unclear — ask for clarification
+    if report.clarification_questions and any(
+        u.kind == "user_intent" for u in report.unknowns
+    ):
         return UncertaintyAction.ASK_USER
-        
-    if report.research_questions and any(u.researchable for u in report.unknowns):
-        return UncertaintyAction.RESEARCH
-        
-    if report.claim_conflicts and any(c.severity == "high" for c in report.claim_conflicts):
+
+    # PRIORITY 3: High-severity logical conflicts — adversarial review
+    if report.claim_conflicts and any(
+        c.severity == "high" for c in report.claim_conflicts
+    ):
         return UncertaintyAction.ADVERSARIAL_REVIEW
-        
+
+    # PRIORITY 4: Researchable questions — external research
+    if report.research_questions and any(
+        u.researchable for u in report.unknowns
+    ):
+        return UncertaintyAction.RESEARCH
+
+    # PRIORITY 5: Computationally verifiable — tool verification
     if report.computable_checks:
         return UncertaintyAction.VERIFY_WITH_TOOL
-        
-    if report.total_score <= 0.3 or report.semantic_agreement >= 0.8:
+
+    # PRIORITY 6: Low uncertainty — answer directly
+    if report.total_score <= 0.3 or report.semantic_agreement >= 0.85:
         return UncertaintyAction.ANSWER
-        
+
+    # DEFAULT: Medium uncertainty — answer with explicit caveats
     return UncertaintyAction.ANSWER_WITH_CAVEATS

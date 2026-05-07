@@ -11,12 +11,11 @@ from prompt_toolkit.formatted_text import HTML
 from src.core.config import set_config_value, setup_environment, load_config
 from src.core.schema import (
     Message, Role, ModelConfig, PipelineMode,
-    SessionSnapshot, ContextZone, HookEvent, HookConfig,
+    SessionSnapshot, HookEvent, HookConfig,
 )
 from src.core.pipeline import run_pipeline
 from src.core.monitor import SessionMonitor
-from src.memory.context_tracker import create_budget, update_budget, get_zone
-from src.memory.compactor import compact_messages, apply_compaction
+from src.memory.compactor import compact_messages, apply_compaction, KEEP_RECENT_DEFAULT
 from src.memory.session_store import (
     generate_session_id, save_session, load_session, list_sessions,
 )
@@ -142,10 +141,10 @@ def main(
     pipeline_mode = PipelineMode.ADAPTIVE if mode.lower() == "adaptive" else PipelineMode.INSTANT
     model_config = ModelConfig(model_name=model, temperature=temperature)
     context_limit = _get_context_limit(model)
-    budget = create_budget(context_limit)
     monitor = SessionMonitor(max_context_length=context_limit)
     session_id = generate_session_id()
     messages: list[Message] = []
+    injected_skills: set[str] = set()
 
     # --- Setup extensions and tools ---
     setup_tools()
@@ -238,7 +237,7 @@ def main(
                     continue
 
                 elif cmd == "/status":
-                    console.print(render_dashboard(monitor.stats, budget))
+                    console.print(render_dashboard(monitor.stats, monitor.budget))
                     continue
 
                 elif cmd == "/mode":
@@ -257,8 +256,6 @@ def main(
                     model = parts[1]
                     model_config.model_name = model
                     context_limit = _get_context_limit(model)
-                    # Recreate budget and monitor for new context limit
-                    budget = create_budget(context_limit)
                     monitor = SessionMonitor(max_context_length=context_limit)
                     print_info(f"Model set to {model}. Context limit: {context_limit}")
                     console.print(f"  Mode: [bold]{pipeline_mode.value}[/bold] │ Model: [bold]{model}[/bold] │ Session: [dim]{session_id}[/dim]\n")
@@ -282,9 +279,12 @@ def main(
                         result = compact_messages(messages, model)
                     if result.summary:
                         messages = apply_compaction(messages, result)
-                        budget = create_budget(context_limit)
-                        est_tokens = len(result.summary) // 4
-                        budget = update_budget(budget, est_tokens)
+                        monitor.reset_budget()
+                        monitor.update(
+                            tokens_used=len(result.summary) // 4,
+                            duration_sec=0.0,
+                            model_name=model,
+                        )
                         print_info(
                             f"Compacted {result.original_count} messages → 1 summary. "
                             f"~{result.tokens_saved} tokens freed."
@@ -295,7 +295,7 @@ def main(
 
                 elif cmd == "/clear":
                     messages = []
-                    budget = create_budget(context_limit)
+                    monitor.reset_budget()
                     project_memory = load_project_memory(_get_project_root())
                     if project_memory:
                         messages.append(Message(role=Role.SYSTEM, content=project_memory))
@@ -308,7 +308,8 @@ def main(
 
             # --- Skill matching ---
             matched_skill = match_skill(registry, user_input)
-            if matched_skill:
+            if matched_skill and matched_skill.name not in injected_skills:
+                injected_skills.add(matched_skill.name)
                 print_info(f"Skill activated: {matched_skill.name}")
                 messages.append(
                     Message(role=Role.SYSTEM, content=matched_skill.instructions)
@@ -326,15 +327,30 @@ def main(
                 duration_sec=result.duration_sec,
                 model_name=model,
             )
-            budget = update_budget(budget, result.tokens_used)
-
             assistant_msg = Message(role=Role.ASSISTANT, content=result.content)
             messages.append(assistant_msg)
 
             print_debug_info(debug_info)
             print_message("assistant", result.content)
-            console.print(render_dashboard(monitor.stats, budget))
-            print_zone_warning(budget.zone)
+            console.print(render_dashboard(monitor.stats, monitor.budget))
+            print_zone_warning(monitor.zone)
+
+            if monitor.should_auto_compact() and len(messages) > KEEP_RECENT_DEFAULT:
+                print_warning("Context critical (>90%). Auto-compacting...")
+                with console.status("[bold yellow]Compacting...[/bold yellow]", spinner="dots"):
+                    compact_result = compact_messages(messages, model)
+                if compact_result.summary:
+                    messages[:] = apply_compaction(messages, compact_result)
+                    monitor.reset_budget()
+                    monitor.update(
+                        tokens_used=len(compact_result.summary) // 4,
+                        duration_sec=0.0,
+                        model_name=model,
+                    )
+                    print_info(
+                        f"Auto-compacted {compact_result.original_count} messages. "
+                        f"~{compact_result.tokens_saved} tokens freed."
+                    )
 
     except KeyboardInterrupt:
         console.print("\n")

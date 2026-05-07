@@ -4,6 +4,7 @@ from rich.table import Table
 from rich.markdown import Markdown
 from rich.progress_bar import ProgressBar
 from rich.text import Text
+from rich.rule import Rule
 
 from src.core.schema import MonitorStats, ContextBudget, ContextZone
 
@@ -33,7 +34,7 @@ def print_welcome():
     banner.append("            ║\n", style="cyan")
     banner.append("║  ", style="cyan")
     banner.append("Adaptive Reasoning", style="italic dim")
-    banner.append("║\n", style="cyan")
+    banner.append("                  ║\n", style="cyan")
     banner.append("╚══════════════════════════════════════╝", style="cyan")
     console.print(banner)
     console.print()
@@ -119,39 +120,42 @@ def render_dashboard(stats: MonitorStats, budget: ContextBudget = None) -> Panel
 
 
 def print_message(role: str, content: str):
-    """Display a chat message in a styled panel.
+    """Display a chat message in a styled format without full box borders 
+    to prevent alignment issues with wide characters (emojis, math).
 
     Args:
         role: Message role ('user' or 'assistant').
         content: The message content (rendered as markdown for assistant).
     """
     if role == "user":
-        console.print(
-            Panel(
-                Text(content),
-                title="[bold green]You[/bold green]",
-                border_style="green",
-                padding=(0, 1),
-            )
-        )
+        console.print(f"\n[bold green]You:[/bold green] {content}\n")
     else:
+        console.print(Rule(title="[bold bright_blue]Coalyx[/bold bright_blue]", style="bright_blue", align="left"))
         if not content or not content.strip():
-            body = Text("(no response)", style="dim italic")
+            console.print(Text("(no response)", style="dim italic"))
         else:
-            try:
-                body = Markdown(content)
-            except Exception:
-                body = Text(content)
+            import time
+            from rich.live import Live
+            # Simulate token streaming effect
+            chunk_size = 8
+            delay = 0.015
+            with Live(auto_refresh=False, console=console) as live:
+                for i in range(0, len(content) + chunk_size, chunk_size):
+                    chunk = content[:i]
+                    if chunk:
+                        try:
+                            live.update(Markdown(chunk), refresh=True)
+                        except Exception:
+                            live.update(Text(chunk), refresh=True)
+                    time.sleep(delay)
+                # Ensure the final full content is rendered properly
+                try:
+                    live.update(Markdown(content), refresh=True)
+                except Exception:
+                    live.update(Text(content), refresh=True)
 
-        console.print(
-            Panel(
-                body,
-                title="[bold bright_blue]Coalyx[/bold bright_blue]",
-                border_style="bright_blue",
-                padding=(0, 1),
-                expand=True,
-            )
-        )
+        console.print(Rule(style="bright_blue"))
+        console.print()
 
 
 def print_debug_info(debug_info: dict):

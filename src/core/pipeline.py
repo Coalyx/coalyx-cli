@@ -80,6 +80,7 @@ def run_adaptive_pipeline(
     ollama_no_think = {"think": False} if _is_ollama(config.model_name) else None
 
     # STAGE 1: Fast Probe — single batched call with n=3
+    rich.print("  [dim]◈ Sampling internal reasoning paths...[/dim]")
     # Note: Tools are intentionally NOT passed here. Stage 1 candidates are
     # only used for semantic uncertainty measurement, not for execution.
     # Passing tools to small models causes them to dump raw JSON in content.
@@ -99,6 +100,7 @@ def run_adaptive_pipeline(
     debug_info["stage1_candidates"] = texts
 
     # MEASURE UNCERTAINTY
+    rich.print("  [dim]◈ Measuring semantic consistency...[/dim]")
     try:
         consistency = calculate_group_consistency(texts)
     except Exception as e:
@@ -108,13 +110,16 @@ def run_adaptive_pipeline(
     debug_info["consistency"] = consistency
 
     # UNCERTAINTY GATE
+    rich.print(f"  [dim]◈ Consistency score: {consistency:.2f} (Threshold: {CERTAINTY_THRESHOLD})[/dim]")
     if consistency >= CERTAINTY_THRESHOLD:
+        rich.print("  [dim bold green]◈ High certainty. Outputting best candidate.[/dim bold green]")
         best = candidates[0]
         best.tokens_used = total_tokens
         best.duration_sec = total_duration
         return best, debug_info
 
     # STAGE 2: Self-Doubt Activation
+    rich.print("  [dim bold yellow]◈ Uncertainty detected. Entering Self-Doubt Loop for self-correction...[/dim bold yellow]")
     debug_info["stage2_triggered"] = True
 
     unique_ans = "\n\n---\n\n".join(
@@ -182,7 +187,7 @@ def run_pipeline(
             messages.append(assistant_msg)
             
             for tc in res.tool_calls:
-                rich.print(f"  [dim]⚡ Executing tool: [bold]{tc.name}[/bold][/dim]")
+                rich.print(f"  [dim]⚡ Executing tool: [bold]{tc.name}[/bold]...[/dim]")
                 try:
                     args = json.loads(tc.arguments) if isinstance(tc.arguments, str) else tc.arguments
                 except:

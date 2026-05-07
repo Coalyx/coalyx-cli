@@ -1,44 +1,62 @@
 import psutil
-from src.core.schema import MonitorStats
+
+from src.core.schema import MonitorStats, ContextBudget, ContextZone
+from src.memory.context_tracker import create_budget, update_budget
+
+VRAM_FALLBACK = "N/A"
+SPEED_SMOOTHING = 0.7
+
 
 def get_available_vram() -> str:
-    """
-    Attempt to get available VRAM.
-    For local models, we might try NVML or similar.
-    For now, we return N/A or system RAM if not a local GPU.
-    """
+    """Return approximate available system memory as a formatted string."""
     try:
-        # Pynvml can be added later for accurate Nvidia VRAM.
-        # Fallback to system RAM for now.
         mem = psutil.virtual_memory()
-        available_gb = mem.available / (1024 ** 3)
-        return f"{available_gb:.1f} GB (Sys RAM)"
+        return f"{mem.available / (1024 ** 3):.1f} GB (Sys RAM)"
     except Exception:
-        return "N/A"
+        return VRAM_FALLBACK
+
 
 class SessionMonitor:
+    """Unified session monitor tracking tokens, speed, and context budget."""
+
     def __init__(self, max_context_length: int = 4096):
         self.stats = MonitorStats()
+        self.budget = create_budget(max_context_length)
         self.stats.remaining_context_length = max_context_length
         self.stats.available_vram = get_available_vram()
-        
-    def update(self, tokens_used: int, duration_sec: float, model_name: str):
-        """Update monitor stats after a generation."""
+
+    @property
+    def zone(self) -> ContextZone:
+        return self.budget.zone
+
+    def should_auto_compact(self) -> bool:
+        return self.budget.zone == ContextZone.CRITICAL
+
+    def should_suggest_compact(self) -> bool:
+        return self.budget.zone == ContextZone.COMPACT_SUGGESTED
+
+    def update(self, tokens_used: int, duration_sec: float, model_name: str) -> None:
+        """Update stats after a generation cycle."""
         self.stats.model_info = model_name
         self.stats.total_tokens_used += tokens_used
-        
-        # Approximate remaining context (very rough, assumes reset per message unless tracked otherwise)
-        # Real context tracking requires counting tokens of all messages.
-        self.stats.remaining_context_length -= tokens_used
-        if self.stats.remaining_context_length < 0:
-            self.stats.remaining_context_length = 0
-            
+
+        self.budget = update_budget(self.budget, tokens_used)
+        self.stats.remaining_context_length = max(
+            self.budget.total_capacity - self.budget.used_tokens, 0
+        )
+
         if duration_sec > 0:
             speed = tokens_used / duration_sec
-            # Rolling average
-            if self.stats.avg_speed_tokens_per_sec == 0.0:
-                self.stats.avg_speed_tokens_per_sec = speed
-            else:
-                self.stats.avg_speed_tokens_per_sec = (self.stats.avg_speed_tokens_per_sec * 0.7) + (speed * 0.3)
-                
+            prev = self.stats.avg_speed_tokens_per_sec
+            self.stats.avg_speed_tokens_per_sec = (
+                speed if prev == 0.0
+                else prev * SPEED_SMOOTHING + speed * (1 - SPEED_SMOOTHING)
+            )
+
         self.stats.available_vram = get_available_vram()
+
+    def reset_budget(self, max_tokens: int | None = None) -> None:
+        """Reset context budget, optionally with a new capacity."""
+        capacity = max_tokens or self.budget.total_capacity
+        self.budget = create_budget(capacity)
+        self.stats.remaining_context_length = capacity

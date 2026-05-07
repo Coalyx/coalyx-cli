@@ -1,6 +1,6 @@
 from typing import List
 
-from src.core.schema import Message, Role, CompactionResult, SessionState
+from src.core.schema import Message, Role, CompactionResult
 from src.core.model import generate_response
 
 COMPACT_SYSTEM_PROMPT = (
@@ -8,21 +8,35 @@ COMPACT_SYSTEM_PROMPT = (
     "into a concise summary that preserves all key decisions, facts, code snippets, "
     "and action items. Output ONLY the summary, no preamble."
 )
+MIN_MESSAGES_TO_COMPACT = 2
+KEEP_RECENT_DEFAULT = 4
 
 
-def compact_messages(messages: List[Message], model_name: str) -> CompactionResult:
-    """Compress a list of messages into a single summary message via LLM.
-
-    Uses Instant mode (single call) to avoid recursive multi-path sampling.
+def compact_messages(
+    messages: List[Message],
+    model_name: str,
+    keep_recent: int = KEEP_RECENT_DEFAULT,
+) -> CompactionResult:
+    """Compress older messages into a summary, preserving recent ones.
 
     Args:
-        messages: The conversation messages to compact.
-        model_name: Model identifier for the summarization call.
+        messages: Full conversation history.
+        model_name: Model to use for summarization.
+        keep_recent: Number of recent messages to exclude from compaction.
 
     Returns:
-        CompactionResult with the summary and token savings metadata.
+        CompactionResult with summary of the older portion.
     """
-    if len(messages) <= 2:
+    if len(messages) <= MIN_MESSAGES_TO_COMPACT:
+        return CompactionResult(
+            summary="",
+            original_count=len(messages),
+            compacted_count=len(messages),
+            tokens_saved=0,
+        )
+
+    to_compact = messages[:-keep_recent] if len(messages) > keep_recent else messages
+    if len(to_compact) <= MIN_MESSAGES_TO_COMPACT:
         return CompactionResult(
             summary="",
             original_count=len(messages),
@@ -31,7 +45,7 @@ def compact_messages(messages: List[Message], model_name: str) -> CompactionResu
         )
 
     conversation_text = "\n".join(
-        f"[{m.role.value}]: {m.content}" for m in messages
+        f"[{m.role.value}]: {m.content}" for m in to_compact
     )
 
     summary_prompt = [
@@ -47,26 +61,31 @@ def compact_messages(messages: List[Message], model_name: str) -> CompactionResu
         n=1,
     )[0]
 
-    original_tokens = sum(len(m.content) // 4 for m in messages)
+    original_tokens = sum(len(m.content) // 4 for m in to_compact)
     summary_tokens = len(result.content) // 4
 
     return CompactionResult(
         summary=result.content,
-        original_count=len(messages),
+        original_count=len(to_compact),
         compacted_count=1,
         tokens_saved=max(original_tokens - summary_tokens, 0),
     )
 
 
-def apply_compaction(messages: List[Message], result: CompactionResult) -> List[Message]:
-    """Replace old messages with a single summary message.
+def apply_compaction(
+    messages: List[Message],
+    result: CompactionResult,
+    keep_recent: int = KEEP_RECENT_DEFAULT,
+) -> List[Message]:
+    """Replace older messages with summary, keeping recent messages intact.
 
     Args:
-        messages: Current message list.
-        result: The compaction result containing the summary.
+        messages: Full conversation history.
+        result: Compaction result containing the summary text.
+        keep_recent: Number of recent messages to preserve after summary.
 
     Returns:
-        New message list starting with the compacted summary.
+        New message list: [summary] + [recent messages].
     """
     if not result.summary:
         return messages
@@ -75,4 +94,6 @@ def apply_compaction(messages: List[Message], result: CompactionResult) -> List[
         role=Role.SYSTEM,
         content=f"[Compacted conversation summary]\n{result.summary}",
     )
-    return [summary_msg]
+
+    recent = messages[-keep_recent:] if len(messages) > keep_recent else []
+    return [summary_msg] + recent

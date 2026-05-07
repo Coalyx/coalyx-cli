@@ -5,7 +5,7 @@ from typing import List, Optional
 import litellm
 from litellm import completion
 
-from src.core.schema import Message, GenerationResult
+from src.core.schema import Message, GenerationResult, ToolCall
 
 litellm.suppress_debug_info = False
 litellm.set_verbose = False
@@ -27,6 +27,7 @@ def generate_response(
     n: int = 1,
     max_retries: int = DEFAULT_MAX_RETRIES,
     extra_body: Optional[dict] = None,
+    tools: Optional[list] = None,
 ) -> List[GenerationResult]:
     """Generate response(s) using litellm with automatic retry on rate limits.
 
@@ -48,13 +49,25 @@ def generate_response(
     Returns:
         List of GenerationResult.
     """
-    formatted = [{"role": m.role.value, "content": m.content} for m in messages]
+    formatted = []
+    for m in messages:
+        msg_dict = {"role": m.role.value}
+        if m.content is not None:
+            msg_dict["content"] = m.content
+        if m.tool_calls:
+            msg_dict["tool_calls"] = [
+                {"id": tc.id, "type": "function", "function": {"name": tc.name, "arguments": tc.arguments}}
+                for tc in m.tool_calls
+            ]
+        if m.tool_call_id:
+            msg_dict["tool_call_id"] = m.tool_call_id
+        formatted.append(msg_dict)
 
     if n > 1 and not _is_no_batch_provider(model_name):
         try:
             return _call_with_retry(
                 formatted, model_name, temperature, max_tokens, n, max_retries,
-                extra_body=extra_body,
+                extra_body=extra_body, tools=tools,
             )
         except RuntimeError:
             pass  # fall through to sequential
@@ -62,12 +75,12 @@ def generate_response(
     if n > 1:
         return _sequential_generate(
             formatted, model_name, temperature, max_tokens, n, max_retries,
-            extra_body=extra_body,
+            extra_body=extra_body, tools=tools,
         )
 
     return _call_with_retry(
         formatted, model_name, temperature, max_tokens, 1, max_retries,
-        extra_body=extra_body,
+        extra_body=extra_body, tools=tools,
     )
 
 
@@ -79,6 +92,7 @@ def _call_with_retry(
     n: int,
     max_retries: int,
     extra_body: Optional[dict] = None,
+    tools: Optional[list] = None,
 ) -> List[GenerationResult]:
     """Execute a single litellm call with exponential backoff retry.
 
@@ -107,6 +121,8 @@ def _call_with_retry(
     )
     if extra_body:
         call_kwargs["extra_body"] = extra_body
+    if tools:
+        call_kwargs["tools"] = tools
 
     for attempt in range(max_retries + 1):
         start = time.time()
@@ -151,6 +167,7 @@ def _sequential_generate(
     n: int,
     max_retries: int,
     extra_body: Optional[dict] = None,
+    tools: Optional[list] = None,
 ) -> List[GenerationResult]:
     """Generate n candidates via sequential single calls with spacing.
 
@@ -178,7 +195,7 @@ def _sequential_generate(
 
         batch = _call_with_retry(
             formatted_messages, model_name, temperature, max_tokens, 1, max_retries,
-            extra_body=extra_body,
+            extra_body=extra_body, tools=tools,
         )
         results.extend(batch)
 
@@ -202,12 +219,23 @@ def _parse_response(response, duration: float) -> List[GenerationResult]:
     for choice in response.choices:
         content = choice.message.content or ""
         tokens = total_tokens // choice_count
+        
+        parsed_tools = None
+        if hasattr(choice.message, "tool_calls") and choice.message.tool_calls:
+            parsed_tools = []
+            for tc in choice.message.tool_calls:
+                parsed_tools.append(ToolCall(
+                    id=tc.id,
+                    name=tc.function.name,
+                    arguments=tc.function.arguments
+                ))
 
         results.append(
             GenerationResult(
                 content=content,
                 tokens_used=tokens,
                 duration_sec=duration,
+                tool_calls=parsed_tools,
             )
         )
 

@@ -8,6 +8,7 @@ class Role(str, Enum):
     USER = "user"
     ASSISTANT = "assistant"
     SYSTEM = "system"
+    TOOL = "tool"
 
 
 class PipelineMode(str, Enum):
@@ -33,9 +34,16 @@ class ContextZone(str, Enum):
 
 # --- Core Chat Schemas ---
 
+class ToolCall(BaseModel):
+    id: str
+    name: str
+    arguments: str
+
 class Message(BaseModel):
     role: Role
     content: str
+    tool_calls: Optional[List[ToolCall]] = None
+    tool_call_id: Optional[str] = None
 
 
 class ModelConfig(BaseModel):
@@ -48,6 +56,7 @@ class GenerationResult(BaseModel):
     content: str
     tokens_used: int
     duration_sec: float
+    tool_calls: Optional[List[ToolCall]] = None
 
 
 class EmbeddingResult(BaseModel):

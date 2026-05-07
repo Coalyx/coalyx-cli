@@ -22,41 +22,43 @@ pip install -e .
 
 ## Quick Start
 
+Just run a single command to get started:
+
 ```bash
-# Scaffold project runtime directory
-coalyx init
+coalyx
+```
 
-# Set API keys
-coalyx config set gemini-api-key "YOUR_GEMINI_KEY"
-coalyx config set openai-api-key "YOUR_OPENAI_KEY"
+If it's your first time running the CLI, Coalyx will automatically scaffold the `.coalyx/` directory and display an interactive **Setup Panel** right in your terminal so you can configure your API keys (you only need to do this once).
 
-# Set Ollama (Optional)
-coalyx config set ollama-api-base "http://localhost:11434"
+Whenever you want to update your API keys, just type the following command directly in the chat interface:
+```text
+/config
+```
 
-# Start chatting (Instant mode)
-coalyx chat
+### Advanced Run Options
 
-# Start chatting (Adaptive Reasoning mode)
-coalyx chat --mode adaptive --model gemini/gemini-2.0-flash
+```bash
+# Enable deep reasoning (Adaptive Reasoning mode)
+coalyx --mode adaptive --model gemini/gemini-2.0-flash
 
-# Using local Ollama models
-coalyx chat --model ollama/gemma4:26b
+# Use a local model via Ollama
+coalyx --model ollama/gemma4:26b
 ```
 
 ## Commands
 
 | Command | Description |
 |---|---|
-| `coalyx init` | Scaffold `.coalyx/` directory and `COALYX.md` |
-| `coalyx config set <key> <value>` | Set API keys or config values |
-| `coalyx config show` | Show current configuration |
-| `coalyx chat` | Start interactive chat |
-| `coalyx sessions` | List saved sessions |
+| `coalyx` | Launch the main interactive chat interface |
+| `coalyx --mode adaptive` | Run Coalyx with Adaptive Reasoning mode |
+| `coalyx --help` | View all launch parameters |
 
 ## Chat Slash Commands
 
 | Command | Description |
 |---|---|
+| `/config` | Open the Interactive Setup Panel to change API keys |
+| `/model <name>` | Switch the active AI model dynamically |
 | `/compact` | Compress conversation history |
 | `/clear` | Clear session and reload project memory |
 | `/mode` | Toggle Instant / Adaptive Reasoning |

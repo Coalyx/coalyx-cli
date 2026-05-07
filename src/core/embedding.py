@@ -22,7 +22,6 @@ def get_embedding(text: str) -> EmbeddingResult:
     genai.configure(api_key=api_key)
     
     try:
-        # Using text-embedding-004 which is the recommended Gemini embedding model
         result = genai.embed_content(
             model="models/text-embedding-004",
             content=text,

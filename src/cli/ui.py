@@ -200,6 +200,7 @@ def print_slash_commands():
     table.add_column("Description", style="dim")
 
     table.add_row("/file <path>", "Load a file as input prompt")
+    table.add_row("/model <name>", "Switch the active AI model")
     table.add_row("/compact", "Compress conversation history to free context")
     table.add_row("/clear", "Clear all messages and reset session")
     table.add_row("/mode", "Toggle between Instant and Adaptive Reasoning")

@@ -28,6 +28,7 @@ from src.extensions.registry import (
 )
 from src.extensions.skill_loader import discover_skills
 from src.extensions.hook_runner import run_hooks
+from src.tools import setup_tools
 from src.cli.ui import (
     console, print_welcome, print_error, print_warning, print_info,
     render_dashboard, print_message, print_debug_info,
@@ -35,8 +36,6 @@ from src.cli.ui import (
 )
 
 app = typer.Typer(help="Coalyx CLI — Multi-Task AI Chat with Adaptive Reasoning")
-config_app = typer.Typer(help="Manage configuration settings")
-app.add_typer(config_app, name="config")
 
 COALYX_DIR = ".coalyx"
 SESSIONS_DIR = "sessions"
@@ -92,77 +91,33 @@ def _load_hooks_from_settings(registry, coalyx_dir: Path) -> None:
             continue
 
 
-# --- Config Commands ---
-
-@config_app.command("set")
-def config_set(key: str, value: str):
-    """Set a configuration value (e.g. gemini-api-key, openai-api-key, ollama-api-base)."""
-    set_config_value(key, value)
-    console.print(f"[green]✓ Set [bold]{key}[/bold] successfully.[/green]")
-
-
-@config_app.command("show")
-def config_show():
-    """Show current configuration (keys are masked)."""
-    config = load_config()
-    if not config:
-        print_info("No configuration set. Use 'coalyx config set <key> <value>'.")
-        return
-
-    for key, value in config.items():
-        if "key" in key.lower() or "secret" in key.lower():
-            masked = value[:4] + "****" + value[-4:] if len(value) > 8 else "****"
-            console.print(f"  [cyan]{key}[/cyan]: {masked}")
-        else:
-            console.print(f"  [cyan]{key}[/cyan]: {value}")
-
-
-# --- Init Command ---
-
-@app.command("init")
-def init_project():
-    """Scaffold .coalyx/ directory and COALYX.md in the current project."""
+def ensure_initialized():
+    """Silently scaffold .coalyx/ directory if it doesn't exist."""
     root = _get_project_root()
     coalyx_dir = root / COALYX_DIR
-
-    (coalyx_dir / SESSIONS_DIR).mkdir(parents=True, exist_ok=True)
-    (coalyx_dir / SKILLS_DIR).mkdir(parents=True, exist_ok=True)
-
-    settings_path = coalyx_dir / SETTINGS_FILE
-    if not settings_path.exists():
+    if not coalyx_dir.exists():
+        (coalyx_dir / SESSIONS_DIR).mkdir(parents=True, exist_ok=True)
+        (coalyx_dir / SKILLS_DIR).mkdir(parents=True, exist_ok=True)
+        settings_path = coalyx_dir / SETTINGS_FILE
         settings_path.write_text(json.dumps({"hooks": []}, indent=2))
+        scaffold_memory_file(root)
 
-    memory_path = scaffold_memory_file(root)
+def interactive_setup():
+    """Prompt user for essential API keys."""
+    console.print("\n[bold yellow]Welcome to Coalyx CLI![/bold yellow]")
+    console.print("Let's do a quick setup. You can always run [bold cyan]/config[/bold cyan] inside the chat to change these later.\n")
+    gemini_key = console.input("Enter Gemini API Key (leave blank to skip): ").strip()
+    if gemini_key:
+        set_config_value("gemini-api-key", gemini_key)
+    
+    openai_key = console.input("Enter OpenAI API Key (leave blank to skip): ").strip()
+    if openai_key:
+        set_config_value("openai-api-key", openai_key)
+        
+    print_info("Setup complete! Starting chat...\n")
 
-    console.print(f"[green]✓ Initialized .coalyx/ directory at {coalyx_dir}[/green]")
-    console.print(f"[green]✓ Created {memory_path.name}[/green]")
-    print_info("Add skills to .coalyx/skills/ and hooks to .coalyx/settings.local.json")
-
-
-# --- Sessions Command ---
-
-@app.command("sessions")
-def list_saved_sessions():
-    """List all saved chat sessions."""
-    session_dir = _get_coalyx_dir() / SESSIONS_DIR
-    sessions = list_sessions(session_dir)
-
-    if not sessions:
-        print_info("No saved sessions found.")
-        return
-
-    for s in sessions[:10]:
-        msg_count = len(s.messages)
-        console.print(
-            f"  [cyan]{s.session_id}[/cyan] │ {s.model_name} │ "
-            f"{msg_count} messages │ {s.updated_at}"
-        )
-
-
-# --- Chat Command ---
-
-@app.command("chat")
-def chat(
+@app.callback(invoke_without_command=True)
+def main(
     model: str = typer.Option(
         "gemini/gemini-2.0-flash",
         help="Model identifier (e.g. gpt-4o, gemini/gemini-2.0-flash, ollama/llama3)",
@@ -172,6 +127,13 @@ def chat(
     resume: str = typer.Option("", help="Resume a saved session by ID"),
 ):
     """Start an interactive chat session."""
+    ensure_initialized()
+    
+    config = load_config()
+    if not config.get("gemini-api-key") and not config.get("openai-api-key") and not config.get("ollama-api-base"):
+        interactive_setup()
+        setup_environment() # reload config
+        
     setup_environment()
 
     pipeline_mode = PipelineMode.ADAPTIVE if mode.lower() == "adaptive" else PipelineMode.INSTANT
@@ -182,7 +144,8 @@ def chat(
     session_id = generate_session_id()
     messages: list[Message] = []
 
-    # --- Setup extensions ---
+    # --- Setup extensions and tools ---
+    setup_tools()
     registry = create_registry()
     coalyx_dir = _get_coalyx_dir()
     _load_hooks_from_settings(registry, coalyx_dir)
@@ -253,6 +216,23 @@ def chat(
                     print_slash_commands()
                     continue
 
+                elif cmd == "/config":
+                    console.print("\n[bold yellow]Configuration Setup[/bold yellow]")
+                    gemini_key = console.input("Enter Gemini API Key (leave blank to skip): ").strip()
+                    if gemini_key:
+                        set_config_value("gemini-api-key", gemini_key)
+                        print_info("Gemini API Key updated.")
+                    openai_key = console.input("Enter OpenAI API Key (leave blank to skip): ").strip()
+                    if openai_key:
+                        set_config_value("openai-api-key", openai_key)
+                        print_info("OpenAI API Key updated.")
+                    ollama_base = console.input("Enter Ollama API Base (leave blank to skip): ").strip()
+                    if ollama_base:
+                        set_config_value("ollama-api-base", ollama_base)
+                        print_info("Ollama API Base updated.")
+                    setup_environment() # apply new keys
+                    continue
+
                 elif cmd == "/status":
                     console.print(render_dashboard(monitor.stats, budget))
                     continue
@@ -263,6 +243,21 @@ def chat(
                     else:
                         pipeline_mode = PipelineMode.INSTANT
                     print_info(f"Switched to {pipeline_mode.value} mode.")
+                    console.print(f"  Mode: [bold]{pipeline_mode.value}[/bold] │ Model: [bold]{model}[/bold] │ Session: [dim]{session_id}[/dim]\n")
+                    continue
+
+                elif cmd == "/model":
+                    if len(parts) < 2:
+                        print_warning("Usage: /model <model_name>")
+                        continue
+                    model = parts[1]
+                    model_config.model_name = model
+                    context_limit = _get_context_limit(model)
+                    # Recreate budget and monitor for new context limit
+                    budget = create_budget(context_limit)
+                    monitor = SessionMonitor(max_context_length=context_limit)
+                    print_info(f"Model set to {model}. Context limit: {context_limit}")
+                    console.print(f"  Mode: [bold]{pipeline_mode.value}[/bold] │ Model: [bold]{model}[/bold] │ Session: [dim]{session_id}[/dim]\n")
                     continue
 
                 elif cmd == "/file":

@@ -3,6 +3,8 @@ from typing import List, Tuple
 from src.core.schema import Message, ModelConfig, GenerationResult, PipelineMode, Role
 from src.core.model import generate_response
 from src.core.embedding import calculate_group_consistency
+from src.tools import get_all_tool_schemas, execute_tool
+import json
 
 STAGE1_CANDIDATES = 3
 STAGE1_TEMPERATURE = 0.7
@@ -16,13 +18,14 @@ def _is_ollama(model_name: str) -> bool:
 
 
 def run_instant_pipeline(
-    messages: List[Message], config: ModelConfig
+    messages: List[Message], config: ModelConfig, tools: list = None
 ) -> GenerationResult:
     """Run single-shot generation without uncertainty analysis.
 
     Args:
         messages: Conversation history.
         config: Model configuration.
+        tools: Optional list of tool definitions.
 
     Returns:
         Single GenerationResult.
@@ -33,12 +36,13 @@ def run_instant_pipeline(
         temperature=config.temperature,
         max_tokens=config.max_tokens,
         n=1,
+        tools=tools,
     )
     return results[0]
 
 
 def run_adaptive_pipeline(
-    messages: List[Message], config: ModelConfig
+    messages: List[Message], config: ModelConfig, tools: list = None
 ) -> Tuple[GenerationResult, dict]:
     """Run the Adaptive Uncertainty-Aware Reasoning pipeline.
 
@@ -60,6 +64,7 @@ def run_adaptive_pipeline(
     Args:
         messages: Conversation history.
         config: Model configuration.
+        tools: Optional list of tool definitions.
 
     Returns:
         Tuple of (final GenerationResult, debug info dict).
@@ -81,6 +86,7 @@ def run_adaptive_pipeline(
         max_tokens=config.max_tokens,
         n=STAGE1_CANDIDATES,
         extra_body=ollama_no_think,
+        tools=tools,
     )
 
     total_tokens = sum(c.tokens_used for c in candidates)
@@ -133,6 +139,7 @@ def run_adaptive_pipeline(
         max_tokens=config.max_tokens,
         n=1,
         extra_body=ollama_no_think,
+        tools=tools,
     )[0]
 
     final_res.tokens_used += total_tokens
@@ -154,6 +161,34 @@ def run_pipeline(
     Returns:
         Tuple of (GenerationResult, debug info dict).
     """
-    if mode == PipelineMode.INSTANT:
-        return run_instant_pipeline(messages, config), {}
-    return run_adaptive_pipeline(messages, config)
+    tools = get_all_tool_schemas()
+    current_messages = messages.copy()
+    final_debug = {}
+    import rich
+
+    while True:
+        if mode == PipelineMode.INSTANT:
+            res = run_instant_pipeline(current_messages, config, tools if tools else None)
+            debug = {}
+        else:
+            res, debug = run_adaptive_pipeline(current_messages, config, tools if tools else None)
+            
+        final_debug.update(debug)
+        
+        if res.tool_calls:
+            assistant_msg = Message(role=Role.ASSISTANT, content=res.content or "", tool_calls=res.tool_calls)
+            current_messages.append(assistant_msg)
+            messages.append(assistant_msg) # Update original list reference so CLI history captures it
+            
+            for tc in res.tool_calls:
+                rich.print(f"  [dim]⚡ Executing tool: [bold]{tc.name}[/bold][/dim]")
+                try:
+                    args = json.loads(tc.arguments) if isinstance(tc.arguments, str) else tc.arguments
+                except:
+                    args = {}
+                output = execute_tool(tc.name, args)
+                tool_msg = Message(role=Role.TOOL, content=str(output), tool_call_id=tc.id)
+                current_messages.append(tool_msg)
+                messages.append(tool_msg)
+        else:
+            return res, final_debug

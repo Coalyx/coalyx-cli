@@ -5,6 +5,7 @@ from src.core.model import generate_response
 from src.core.embedding import calculate_group_consistency
 from src.tools import get_all_tool_schemas, execute_tool
 import json
+import rich
 
 STAGE1_CANDIDATES = 3
 STAGE1_TEMPERATURE = 0.7
@@ -79,6 +80,9 @@ def run_adaptive_pipeline(
     ollama_no_think = {"think": False} if _is_ollama(config.model_name) else None
 
     # STAGE 1: Fast Probe — single batched call with n=3
+    # Note: Tools are intentionally NOT passed here. Stage 1 candidates are
+    # only used for semantic uncertainty measurement, not for execution.
+    # Passing tools to small models causes them to dump raw JSON in content.
     candidates = generate_response(
         messages=messages,
         model_name=config.model_name,
@@ -86,7 +90,6 @@ def run_adaptive_pipeline(
         max_tokens=config.max_tokens,
         n=STAGE1_CANDIDATES,
         extra_body=ollama_no_think,
-        tools=tools,
     )
 
     total_tokens = sum(c.tokens_used for c in candidates)
@@ -164,21 +167,19 @@ def run_pipeline(
     tools = get_all_tool_schemas()
     current_messages = messages.copy()
     final_debug = {}
-    import rich
-
     while True:
         if mode == PipelineMode.INSTANT:
             res = run_instant_pipeline(current_messages, config, tools if tools else None)
             debug = {}
         else:
             res, debug = run_adaptive_pipeline(current_messages, config, tools if tools else None)
-            
+        
         final_debug.update(debug)
         
         if res.tool_calls:
             assistant_msg = Message(role=Role.ASSISTANT, content=res.content or "", tool_calls=res.tool_calls)
             current_messages.append(assistant_msg)
-            messages.append(assistant_msg) # Update original list reference so CLI history captures it
+            messages.append(assistant_msg)
             
             for tc in res.tool_calls:
                 rich.print(f"  [dim]⚡ Executing tool: [bold]{tc.name}[/bold][/dim]")

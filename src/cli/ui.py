@@ -32,7 +32,7 @@ def print_welcome():
     banner.append("C O A L Y X   C L I", style="bold bright_cyan")
     banner.append("            ║\n", style="cyan")
     banner.append("║  ", style="cyan")
-    banner.append("Adaptive Uncertainty-Aware Reasoning", style="italic dim")
+    banner.append("Adaptive Reasoning", style="italic dim")
     banner.append("║\n", style="cyan")
     banner.append("╚══════════════════════════════════════╝", style="cyan")
     console.print(banner)

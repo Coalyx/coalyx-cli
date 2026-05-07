@@ -1,5 +1,8 @@
 import time
 import logging
+import json
+import re
+import uuid
 from typing import List, Optional
 
 import litellm
@@ -7,7 +10,7 @@ from litellm import completion
 
 from src.core.schema import Message, GenerationResult, ToolCall
 
-litellm.suppress_debug_info = False
+litellm.suppress_debug_info = True
 litellm.set_verbose = False
 logger = logging.getLogger(__name__)
 
@@ -70,7 +73,7 @@ def generate_response(
                 extra_body=extra_body, tools=tools,
             )
         except RuntimeError:
-            pass  # fall through to sequential
+            pass
 
     if n > 1:
         return _sequential_generate(
@@ -229,6 +232,50 @@ def _parse_response(response, duration: float) -> List[GenerationResult]:
                     name=tc.function.name,
                     arguments=tc.function.arguments
                 ))
+        elif content and '\"name\"' in content and '\"arguments\"' in content:
+            # Fallback: Extract tool calls from raw JSON in content (common with Ollama/Small models)
+            try:
+
+                try:
+                    parsed_json = json.loads(content.strip())
+                    if isinstance(parsed_json, dict) and "name" in parsed_json and "arguments" in parsed_json:
+                        args = parsed_json["arguments"]
+                        args_str = json.dumps(args) if isinstance(args, dict) else str(args)
+                        parsed_tools = [ToolCall(
+                            id=f"call_{uuid.uuid4().hex[:8]}",
+                            name=str(parsed_json["name"]),
+                            arguments=args_str
+                        )]
+                        content = ""
+                except json.JSONDecodeError:
+                    # JSON is likely truncated. Extract tool name and arguments via regex.
+                    name_match = re.search(r'"name"\s*:\s*"([^"]+)"', content)
+                    args_match = re.search(r'"arguments"\s*:\s*\{(.*)', content, re.DOTALL)
+                    if name_match and args_match:
+                        tool_name = name_match.group(1)
+                        args_raw = "{" + args_match.group(1)
+                        if open_braces > 0:
+                            args_raw += "}" * open_braces
+                        
+                        code_match = re.search(r'"code"\s*:\s*"(.*)', args_raw, re.DOTALL)
+                        if code_match:
+                            raw_code = code_match.group(1)
+                            raw_code = raw_code.rstrip("\\")
+                            if raw_code.endswith('"'):
+                                raw_code = raw_code[:-1]
+                            raw_code = raw_code.rstrip().rstrip("}").rstrip().rstrip('"')
+                            args_str = json.dumps({"code": raw_code})
+                        else:
+                            args_str = args_raw
+
+                        parsed_tools = [ToolCall(
+                            id=f"call_{uuid.uuid4().hex[:8]}",
+                            name=tool_name,
+                            arguments=args_str
+                        )]
+                        content = ""
+            except Exception:
+                pass
 
         results.append(
             GenerationResult(

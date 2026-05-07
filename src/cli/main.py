@@ -168,12 +168,19 @@ def main(
         print_info("Loaded project memory from COALYX.md")
 
     # --- Resume session ---
+    snapshot = None
     if resume:
         session_dir = coalyx_dir / SESSIONS_DIR
         snapshot = load_session(resume, session_dir)
         if snapshot:
             messages = snapshot.messages
             session_id = snapshot.session_id
+            model = snapshot.model_name
+            pipeline_mode = snapshot.mode
+            model_config.model_name = model
+            context_limit = _get_context_limit(model)
+            monitor = SessionMonitor(max_context_length=context_limit)
+            monitor.update(tokens_used=snapshot.total_tokens_used, duration_sec=0.0, model_name=model)
             print_info(f"Resumed session {session_id} ({len(messages)} messages)")
         else:
             print_error(f"Session '{resume}' not found.")
@@ -181,12 +188,9 @@ def main(
 
     # --- Check API key for Adaptive mode ---
     config = load_config()
-    if pipeline_mode == PipelineMode.ADAPTIVE and "gemini-api-key" not in config:
-        print_error(
-            "Adaptive mode requires Gemini Embeddings. "
-            "Run '/config' to set your Gemini API key."
-        )
-        return
+    if pipeline_mode == PipelineMode.ADAPTIVE and not config.get("gemini-api-key"):
+        print_warning("Adaptive mode requires Gemini API key. Falling back to Instant mode.")
+        pipeline_mode = PipelineMode.INSTANT
 
     # --- Fire SESSION_START hooks ---
     run_hooks(registry, HookEvent.SESSION_START, {"session_id": session_id, "model": model})
@@ -197,6 +201,14 @@ def main(
         f"Model: [bold]{model}[/bold] │ "
         f"Session: [dim]{session_id}[/dim]\n"
     )
+
+    if resume and snapshot:
+        for msg in messages:
+            if msg.role == Role.USER:
+                print_message("user", msg.content)
+            elif msg.role == Role.ASSISTANT and msg.content:
+                print_message("assistant", msg.content)
+
     print_info("Type /help for available commands.\n")
 
     try:

@@ -7,7 +7,7 @@ name = "coalyx-cli"
 version = "0.2.0"
 description = "A multi-task AI Chat CLI with Adaptive Uncertainty-Aware Reasoning"
 authors = [
-    { name="Nam Pham" }
+    { name="Nam Phan" }
 ]
 requires-python = ">=3.9"
 dependencies = [

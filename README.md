@@ -7,9 +7,10 @@ A lightweight, terminal-based AI chat application designed for seamless interact
 ## Key Features
 
 - **Multi-Provider Support**: Chat with models from OpenAI, Anthropic, Google Gemini, and local models via Ollama.
-- **Smart Context Management**: Automatically manages long conversations to keep your session smooth and responsive without exceeding token limits.
+- **Adaptive Reasoning**: Employs a multi-path evaluation pipeline (Direct, Skeptical, and Context-aware) to resolve uncertainty and ensure logical consistency.
+- **Smart Context Management**: Automatically manages long conversations via intelligent compaction without exceeding token limits.
+- **Session Workspace**: Every chat is a sandboxed environment with persistent artifacts, tool logs, and automated secret redaction.
 - **Tool Integration**: Enhances conversations with built-in utilities like web searching, math evaluation, and file reading.
-- **Customizable Experience**: Easily switch between models, load custom prompts, and configure the chat environment directly through slash commands.
 
 ---
 
@@ -76,11 +77,13 @@ coalyx --model ollama/llama3
 ├── .mcp.json              # MCP Server configuration
 ├── .coalyx/               # Runtime state (git-ignored)
 │   ├── settings.json      # Local configuration
-│   ├── sessions/          # Saved chat history
+│   ├── sessions/          # Structured Reasoning Workspaces
+│   │   └── <session_id>/  # Manifest, artifacts, and logs
 │   └── skills/            # Custom agent instructions
 └── src/
     ├── core/              # Reasoning pipeline & embedding logic
     ├── tools/             # Built-in functional tools
+    ├── memory/            # Session Workspace & Context management
     └── cli/               # Rich UI & Command handling
 ```
 

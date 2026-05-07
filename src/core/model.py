@@ -254,6 +254,7 @@ def _parse_response(response, duration: float) -> List[GenerationResult]:
                     if name_match and args_match:
                         tool_name = name_match.group(1)
                         args_raw = "{" + args_match.group(1)
+                        open_braces = args_raw.count("{") - args_raw.count("}")
                         if open_braces > 0:
                             args_raw += "}" * open_braces
                         

@@ -32,6 +32,16 @@ class ContextZone(str, Enum):
     CRITICAL = "critical"
 
 
+class UncertaintyAction(str, Enum):
+    ANSWER = "answer"
+    ANSWER_WITH_CAVEATS = "answer_with_caveats"
+    ASK_USER = "ask_user"
+    RESEARCH = "research"
+    VERIFY_WITH_TOOL = "verify_with_tool"
+    ADVERSARIAL_REVIEW = "adversarial_review"
+    REFUSE_OR_DEFER = "refuse_or_defer"
+
+
 # --- Core Chat Schemas ---
 
 class ToolCall(BaseModel):
@@ -62,6 +72,59 @@ class GenerationResult(BaseModel):
 class EmbeddingResult(BaseModel):
     vector: List[float]
     tokens_used: int
+
+
+class ConsistencyResult(BaseModel):
+    """Semantic consistency measurement with reusable embeddings."""
+    score: float
+    embeddings: List[List[float]] = Field(default_factory=list)
+    representative_idx: int = 0
+    minority_idx: int = 0
+
+
+class ToolCallLog(BaseModel):
+    """Structured log entry for a single tool invocation."""
+    timestamp: str
+    tool_name: str
+    arguments: Dict[str, Any] = Field(default_factory=dict)
+    status: str = "success"
+    output_preview: str = ""
+    approved_by_user: bool = True
+
+
+# --- Uncertainty Schemas ---
+
+class ClaimConflict(BaseModel):
+    claim_a: str
+    claim_b: str
+    conflict_type: str      # factual | structural | perspective
+    severity: str           # low | medium | high
+
+
+class Unknown(BaseModel):
+    description: str
+    kind: str               # user_intent | factual | contextual
+    ask_user: bool
+    researchable: bool
+
+
+class UncertaintyReport(BaseModel):
+    total_score: float = 0.0
+    semantic_agreement: float = 0.0
+    claim_conflicts: List[ClaimConflict] = Field(default_factory=list)
+    unknowns: List[Unknown] = Field(default_factory=list)
+    assumptions: List[str] = Field(default_factory=list)
+    research_questions: List[str] = Field(default_factory=list)
+    clarification_questions: List[str] = Field(default_factory=list)
+    computable_checks: List[str] = Field(default_factory=list)
+    risk_flags: List[str] = Field(default_factory=list)
+    recommended_action: UncertaintyAction = UncertaintyAction.ANSWER
+
+
+class ClarificationRequest(BaseModel):
+    question: str
+    default_assumptions: List[str] = Field(default_factory=list)
+    fallback_plan: str = ""
 
 
 # --- Monitor Schemas ---

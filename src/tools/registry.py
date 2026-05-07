@@ -18,6 +18,13 @@ class ToolRegistry:
     def execute(self, name: str, kwargs: Dict[str, Any]) -> str:
         if name not in self._tools:
             return f"Error: Tool '{name}' not found."
+
+        # --- Confirmation gate ---
+        from src.tools.confirmation import request_confirmation
+        if not request_confirmation(name, kwargs):
+            logger.info("User denied execution of tool '%s'", name)
+            return f"Tool '{name}' execution was denied by the user."
+
         try:
             result = self._tools[name](**kwargs)
             return str(result) if result is not None else "Success (no output)"

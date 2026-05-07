@@ -5,15 +5,37 @@ from typing import Dict, Any
 
 CONFIG_FILE = Path.home() / ".coalyx_config.json"
 
+DEFAULT_CONFIG = {
+    "reasoning": {
+        "mode": "adaptive",
+        "max_candidates": 3,
+        "max_tool_rounds": 5,
+        "ask_before_research": False,
+        "ask_before_file_write": True,
+        "ask_before_shell": True,
+        "auto_research_on_uncertainty": True,
+        "show_uncertainty_summary": True,
+        "show_assumptions": True,
+    }
+}
+
 def load_config() -> Dict[str, Any]:
     """Load configuration from the config file."""
+    config = DEFAULT_CONFIG.copy()
     if not CONFIG_FILE.exists():
-        return {}
+        return config
     try:
         with open(CONFIG_FILE, "r") as f:
-            return json.load(f)
+            user_config = json.load(f)
+            # Simple merge
+            for k, v in user_config.items():
+                if k == "reasoning" and isinstance(v, dict):
+                    config["reasoning"].update(v)
+                else:
+                    config[k] = v
+            return config
     except json.JSONDecodeError:
-        return {}
+        return config
 
 def save_config(config_data: Dict[str, Any]) -> None:
     """Save configuration to the config file."""

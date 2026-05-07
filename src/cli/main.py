@@ -2,7 +2,7 @@ import json
 import sys
 from pathlib import Path
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 import typer
 from rich.table import Table
@@ -14,7 +14,7 @@ from prompt_toolkit.formatted_text import HTML
 from src.core.config import set_config_value, setup_environment, load_config
 from src.core.schema import (
     Message, Role, ModelConfig, PipelineMode,
-    SessionSnapshot, HookEvent, HookConfig,
+    SessionSnapshot, HookEvent, HookConfig, ClarificationRequest,
 )
 from src.core.pipeline import run_pipeline
 from src.core.monitor import SessionMonitor
@@ -22,6 +22,7 @@ from src.memory.compactor import compact_messages, apply_compaction, KEEP_RECENT
 from src.memory.session_store import (
     generate_session_id, save_session, load_session, list_sessions,
 )
+from src.memory.session_workspace import SessionWorkspace
 from src.memory.project_memory import (
     load_project_memory, scaffold_memory_file, validate_memory_file,
 )
@@ -30,7 +31,7 @@ from src.extensions.registry import (
 )
 from src.extensions.skill_loader import discover_skills
 from src.extensions.hook_runner import run_hooks
-from src.tools import setup_tools
+from src.tools import setup_tools, configure_confirmation, set_project_root
 from src.cli.ui import (
     console, print_welcome, print_error, print_warning, print_info,
     render_dashboard, print_message, print_debug_info,
@@ -50,7 +51,7 @@ MODEL_CONTEXT_LIMITS = {
     "gpt-4": 128_000,
     "gpt-3.5": 16_385,
     "claude": 200_000,
-    "ollama": 16_385,
+    "ollama": 128_000,
 }
 
 
@@ -121,6 +122,34 @@ def interactive_setup():
         
     print_info("Setup complete! Starting chat...\n")
 
+def _build_confirmation_callback():
+    """Build a Rich-based confirmation callback for dangerous tool operations."""
+    from src.tools.confirmation import DANGER_HIGH, DANGER_MEDIUM
+
+    def _confirm(tool_name: str, kwargs: dict, danger_level: str) -> bool:
+        if danger_level == DANGER_HIGH:
+            console.print(f"\n  [bold red]⚠ DANGEROUS TOOL:[/bold red] [bold]{tool_name}[/bold]")
+            # Show the command/code being executed
+            if tool_name in ("bash", "powershell"):
+                console.print(f"  [dim]Command:[/dim] {kwargs.get('command', '?')}")
+            elif tool_name == "repl":
+                code = kwargs.get("code", "?")
+                preview = code[:200] + ("..." if len(code) > 200 else "")
+                console.print(f"  [dim]Code:[/dim] {preview}")
+        elif danger_level == DANGER_MEDIUM:
+            console.print(f"\n  [bold yellow]⚠ File operation:[/bold yellow] [bold]{tool_name}[/bold]")
+            if "filepath" in kwargs:
+                console.print(f"  [dim]Path:[/dim] {kwargs['filepath']}")
+
+        try:
+            answer = console.input("  [bold]Allow? [y/N]:[/bold] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return False
+        return answer in ("y", "yes")
+
+    return _confirm
+
+
 @app.callback(invoke_without_command=True)
 def main(
     model: str = typer.Option(
@@ -130,6 +159,7 @@ def main(
     mode: str = typer.Option("instant", help="Mode: 'instant' or 'adaptive'"),
     temperature: float = typer.Option(0.7, help="Generation temperature"),
     resume: str = typer.Option("", help="Resume a saved session by ID"),
+    auto_approve: bool = typer.Option(False, "--auto-approve", "-y", help="Skip tool confirmation prompts (dangerous)"),
 ):
     """Start an interactive chat session."""
     ensure_initialized()
@@ -146,10 +176,16 @@ def main(
     context_limit = _get_context_limit(model)
     monitor = SessionMonitor(max_context_length=context_limit)
     session_id = generate_session_id()
+    workspace = SessionWorkspace(session_id, _get_coalyx_dir())
     messages: list[Message] = []
     injected_skills: set[str] = set()
 
-    # --- Setup extensions and tools ---
+    # --- Setup security and tools ---
+    set_project_root(str(_get_project_root()))
+    configure_confirmation(
+        callback=_build_confirmation_callback(),
+        auto_approve=auto_approve,
+    )
     setup_tools()
     registry = create_registry()
     coalyx_dir = _get_coalyx_dir()
@@ -170,18 +206,34 @@ def main(
     # --- Resume session ---
     snapshot = None
     if resume:
+        session_id = resume
+        workspace = SessionWorkspace(session_id, coalyx_dir)
+        manifest = workspace.load_manifest()
+        
         session_dir = coalyx_dir / SESSIONS_DIR
         snapshot = load_session(resume, session_dir)
-        if snapshot:
+        
+        if manifest:
+            try:
+                messages = [Message(**msg) for msg in workspace.load_messages()]
+            except Exception:
+                messages = []
+            model = manifest.get("model", model)
+            pipeline_mode = PipelineMode.ADAPTIVE if manifest.get("reasoning_mode") == "Adaptive Reasoning" else PipelineMode.INSTANT
+            model_config.model_name = model
+            context_limit = _get_context_limit(model)
+            monitor = SessionMonitor(max_context_length=context_limit)
+            monitor.update(tokens_used=manifest.get("total_tokens_used", 0), duration_sec=0.0, model_name=model)
+            print_info(f"Resumed workspace session {session_id} ({len(messages)} messages)")
+        elif snapshot:
             messages = snapshot.messages
-            session_id = snapshot.session_id
             model = snapshot.model_name
             pipeline_mode = snapshot.mode
             model_config.model_name = model
             context_limit = _get_context_limit(model)
             monitor = SessionMonitor(max_context_length=context_limit)
             monitor.update(tokens_used=snapshot.total_tokens_used, duration_sec=0.0, model_name=model)
-            print_info(f"Resumed session {session_id} ({len(messages)} messages)")
+            print_info(f"Resumed legacy session {session_id} ({len(messages)} messages)")
         else:
             print_error(f"Session '{resume}' not found.")
             return
@@ -355,19 +407,80 @@ def main(
             # --- Generate response ---
             user_msg = Message(role=Role.USER, content=user_input)
             messages.append(user_msg)
+            workspace.append_message(user_msg)
 
+            old_len = len(messages)
             with console.status("[bold green]Thinking...[/bold green]", spinner="dots"):
                 result, debug_info = run_pipeline(messages, model_config, pipeline_mode)
+
+            # --- Handle Uncertainty Reports ---
+            if "uncertainty_report" in debug_info:
+                workspace.log_uncertainty(debug_info["uncertainty_report"])
+
+            if isinstance(result, ClarificationRequest):
+                # We need to ask the user
+                console.print(f"\n[bold yellow]Coalyx Needs Clarification:[/bold yellow]")
+                console.print(f"[cyan]{result.question}[/cyan]")
+                if result.default_assumptions:
+                    console.print("[dim]If you skip, I will assume:[/dim]")
+                    for a in result.default_assumptions:
+                        console.print(f"[dim]- {a}[/dim]")
+                
+                console.print("[dim](Type your answer, or type [bold]/research[/bold] to let me find out, or press [bold]Enter[/bold] to use assumptions)[/dim]")
+                
+                # Get non-blocking input
+                try:
+                    clarification = _read_user_input(prefix=HTML("<b><ansiyellow>❯</ansiyellow> </b>"))
+                except EOFError:
+                    clarification = ""
+                    
+                if clarification:
+                    clarification = clarification.strip()
+                else:
+                    clarification = ""
+                
+                if not clarification or clarification == "/continue":
+                    console.print(f"[dim]{result.fallback_plan}[/dim]")
+                    # Push assumptions into the context
+                    assumptions_text = "\n".join(f"- {a}" for a in result.default_assumptions)
+                    messages.append(Message(role=Role.USER, content=f"Please proceed with default assumptions:\n{assumptions_text}"))
+                elif clarification == "/research":
+                    console.print("[dim]Delegating to research...[/dim]")
+                    messages.append(Message(role=Role.USER, content="Please use your tools (like web search) to research this missing information yourself and then answer."))
+                else:
+                    messages.append(Message(role=Role.USER, content=clarification))
+                    
+                # Rerun pipeline with the new context
+                with console.status("[bold green]Resuming...[/bold green]", spinner="dots"):
+                    result, debug_info = run_pipeline(messages, model_config, pipeline_mode)
+                    
+                if "uncertainty_report" in debug_info:
+                    workspace.log_uncertainty(debug_info["uncertainty_report"])
+                    
+                # If it asks AGAIN, we just take the fallback answer (no infinite loops)
+                if isinstance(result, ClarificationRequest):
+                    from src.core.schema import GenerationResult
+                    result = GenerationResult(content="Could not resolve uncertainty. " + result.fallback_plan, tokens_used=0, duration_sec=0.0)
 
             monitor.update(
                 tokens_used=result.tokens_used,
                 duration_sec=result.duration_sec,
                 model_name=model,
             )
+            
+            # Sync any intermediate messages appended by pipeline (tool calls, tool results)
+            for msg in messages[old_len:]:
+                workspace.append_message(msg)
+
             assistant_msg = Message(role=Role.ASSISTANT, content=result.content)
             messages.append(assistant_msg)
+            workspace.append_message(assistant_msg)
 
             print_debug_info(debug_info)
+            if "tool_logs" in debug_info:
+                for log in debug_info["tool_logs"]:
+                    workspace.log_tool_call(log)
+                    
             print_message("assistant", result.content)
             console.print(render_dashboard(monitor.stats, monitor.budget))
             print_zone_warning(monitor.zone)
@@ -405,7 +518,18 @@ def main(
     try:
         session_dir.mkdir(parents=True, exist_ok=True)
         save_session(snapshot, session_dir)
-        print_info(f"Session saved: {session_id}")
+        
+        workspace.save_manifest({
+            "session_id": session_id,
+            "project_root": str(_get_project_root()),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "model": model,
+            "reasoning_mode": pipeline_mode.value,
+            "total_tokens_used": monitor.stats.total_tokens_used,
+            "message_count": len(messages),
+            "artifacts": workspace.list_artifacts(),
+        })
+        print_info(f"Session workspace saved: {session_id}")
     except OSError as e:
         print_warning(f"Could not save session: {e}")
 
@@ -444,12 +568,15 @@ def _create_prompt_session() -> PromptSession:
 _prompt_session: Optional[PromptSession] = None
 
 
-def _read_user_input() -> Optional[str]:
+def _read_user_input(prefix: Optional[HTML] = None) -> Optional[str]:
     """Read user input with native multiline paste support.
 
     Uses prompt_toolkit bracket paste mode to auto-detect pasted
     multi-line text. For manual newlines, press Alt+Enter or
     Escape then Enter.
+
+    Args:
+        prefix: Optional custom prompt prefix.
 
     Returns:
         The user input string, or None if empty.
@@ -460,7 +587,7 @@ def _read_user_input() -> Optional[str]:
 
     try:
         text = _prompt_session.prompt(
-            HTML("<b><cyan>You: </cyan></b>"),
+            prefix if prefix else HTML("<b><cyan>You: </cyan></b>"),
         )
     except EOFError:
         raise

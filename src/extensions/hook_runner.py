@@ -1,8 +1,38 @@
+import logging
 import subprocess
 from typing import List, Dict, Any
 
 from src.core.schema import HookEvent, HookResult
 from src.extensions.registry import ExtensionRegistry, get_hooks_for_event
+
+logger = logging.getLogger(__name__)
+
+# Characters / patterns that indicate shell injection risk in hook commands
+_DANGEROUS_PATTERNS = [
+    "`",       # backtick command substitution
+    "$(",      # subshell
+    "&&",      # command chaining
+    "||",      # command chaining
+    ";",       # command separator
+    "|",       # pipe
+    ">",       # redirect
+    "<",       # redirect
+]
+
+
+def _validate_hook_command(command: str) -> None:
+    """Raise ValueError if *command* contains dangerous shell patterns.
+
+    Hook commands loaded from extension config files should be simple
+    executables with arguments. Complex shell constructs (pipes,
+    redirects, backticks, chaining) are blocked to reduce the risk
+    of config-file tampering leading to arbitrary code execution.
+    """
+    for pattern in _DANGEROUS_PATTERNS:
+        if pattern in command:
+            raise ValueError(
+                f"Hook command contains dangerous pattern '{pattern}': {command!r}"
+            )
 
 
 def run_hooks(
@@ -26,8 +56,25 @@ def run_hooks(
     results = []
 
     for hook in hooks:
+        try:
+            _validate_hook_command(hook.command)
+        except ValueError as e:
+            logger.warning("Skipping unsafe hook: %s", e)
+            results.append(HookResult(
+                event=event,
+                success=False,
+                error=str(e),
+            ))
+            continue
+
         result = execute_shell_hook(hook.command, context)
         result.event = event
+        logger.info(
+            "Hook [%s] %s: %s",
+            event.value,
+            "OK" if result.success else "FAIL",
+            hook.command,
+        )
         results.append(result)
 
     return results

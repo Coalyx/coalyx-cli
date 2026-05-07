@@ -1,14 +1,9 @@
+import subprocess
+import sys
 from src.tools.base import tool
 from src.tools.registry import register_tool
+from src.tools.sandbox import get_project_root
 
-@tool(name="ask_user_question", description="Ask the user a question and wait for their input.")
-def ask_user_question(question: str) -> str:
-    print(f"\nAgent asks: {question}")
-    try:
-        answer = input("Your answer: ")
-        return answer
-    except Exception as e:
-        return f"User did not answer: {e}"
 
 @tool(name="todo_write", description="Add an item to the current session's todo list.")
 def todo_write(task: str) -> str:
@@ -33,18 +28,28 @@ def exit_plan_mode() -> str:
 
 @tool(name="repl", description="Execute code in a Python REPL.")
 def repl(code: str) -> str:
+    """Execute Python code in an isolated subprocess.
+
+    The code runs in a separate Python process with a 30-second timeout,
+    so it cannot access or mutate Coalyx's own memory space.
+    """
     try:
-        import io, sys
-        old_stdout = sys.stdout
-        redirected_output = sys.stdout = io.StringIO()
-        exec(code, {})
-        sys.stdout = old_stdout
-        out = redirected_output.getvalue()
-        return out if out else "Code executed successfully."
+        cwd = str(get_project_root()) if get_project_root() else None
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=cwd,
+        )
+        out = result.stdout
+        if result.stderr:
+            out += "\nSTDERR:\n" + result.stderr
+        return out.strip() if out.strip() else "Code executed successfully."
+    except subprocess.TimeoutExpired:
+        return "REPL Error: Execution timed out after 30 seconds."
     except Exception as e:
-        import sys
-        sys.stdout = sys.__stdout__
         return f"REPL Error: {e}"
 
-for t in [ask_user_question, todo_write, config_tool, enter_plan_mode, exit_plan_mode, repl]:
+for t in [todo_write, config_tool, enter_plan_mode, exit_plan_mode, repl]:
     register_tool(t)

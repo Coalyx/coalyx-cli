@@ -2,8 +2,11 @@ import json
 import sys
 from pathlib import Path
 from typing import Optional
+from datetime import datetime
 
 import typer
+from rich.table import Table
+from rich.panel import Panel
 from prompt_toolkit import PromptSession
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.formatted_text import HTML
@@ -47,7 +50,7 @@ MODEL_CONTEXT_LIMITS = {
     "gpt-4": 128_000,
     "gpt-3.5": 16_385,
     "claude": 200_000,
-    "ollama": 32_768,
+    "ollama": 16_385,
 }
 
 
@@ -234,6 +237,28 @@ def main(
                         set_config_value("ollama-api-base", ollama_base)
                         print_info("Ollama API Base updated.")
                     setup_environment() # apply new keys
+                    continue
+
+                elif cmd == "/sessions":
+                    session_dir = coalyx_dir / SESSIONS_DIR
+                    sessions = list_sessions(session_dir)
+                    if not sessions:
+                        print_info("No saved sessions found.")
+                    else:
+                        table = Table(show_header=True, box=None, padding=(0, 1))
+                        table.add_column("Session ID", style="cyan")
+                        table.add_column("Model", style="magenta")
+                        table.add_column("Messages", style="green")
+                        table.add_column("Last Updated", style="dim")
+                        for s in sessions[:10]:
+                            try:
+                                dt = datetime.fromisoformat(s.updated_at)
+                                dt_str = dt.strftime("%Y-%m-%d %H:%M")
+                            except Exception:
+                                dt_str = s.updated_at
+                            table.add_row(s.session_id, s.model_name, str(len(s.messages)), dt_str)
+                        console.print(Panel(table, title="[bold]Recent Sessions[/bold]", border_style="dim", expand=False))
+                        print_info("To resume, start the app with: coalyx --resume <Session ID>")
                     continue
 
                 elif cmd == "/status":

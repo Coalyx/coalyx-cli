@@ -52,6 +52,10 @@ def generate_response(
     Returns:
         List of GenerationResult.
     """
+    if tools and model_name.lower().startswith("ollama/"):
+        model_name = "ollama_chat/" + model_name[len("ollama/"):]
+        logger.info("Auto-upgraded to %s for tool support", model_name)
+
     formatted = []
     for m in messages:
         msg_dict = {"role": m.role.value}

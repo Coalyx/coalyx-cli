@@ -1,6 +1,6 @@
 import os
 from typing import List
-import google.generativeai as genai
+from google import genai
 from src.core.schema import EmbeddingResult
 import numpy as np
 
@@ -17,19 +17,20 @@ def get_embedding(text: str) -> EmbeddingResult:
     """
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        raise ValueError("GEMINI_API_KEY is not set. Please configure it via 'coalyx config set gemini-api-key <key>'")
+        raise ValueError("GEMINI_API_KEY is not set. Please configure it via '/config'")
     
-    genai.configure(api_key=api_key)
+    client = genai.Client(api_key=api_key)
+    
+    # Use symmetric task formatting for semantic similarity
+    formatted_text = f"task: sentence similarity | query: {text}"
     
     try:
-        result = genai.embed_content(
-            model="models/text-embedding-004",
-            content=text,
-            task_type="retrieval_document",
+        result = client.models.embed_content(
+            model="gemini-embedding-2",
+            contents=formatted_text,
         )
-        vector = result['embedding']
-        # Simple heuristic for tokens: 1 token per ~4 characters
-        tokens_used = len(text) // 4
+        vector = result.embeddings[0].values
+        tokens_used = len(formatted_text) // 4
         return EmbeddingResult(vector=vector, tokens_used=tokens_used)
     except Exception as e:
         raise RuntimeError(f"Embedding failed: {str(e)}")

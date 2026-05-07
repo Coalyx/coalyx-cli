@@ -106,7 +106,10 @@ def interactive_setup():
     """Prompt user for essential API keys."""
     console.print("\n[bold yellow]Welcome to Coalyx CLI![/bold yellow]")
     console.print("Let's do a quick setup. You can always run [bold cyan]/config[/bold cyan] inside the chat to change these later.\n")
-    gemini_key = console.input("Enter Gemini API Key (leave blank to skip): ").strip()
+    
+    console.print("[dim]Coalyx requires a Gemini API Key for its Adaptive Reasoning (Embeddings).[/dim]")
+    console.print("[dim]Get your API key here: https://aistudio.google.com/api-keys[/dim]")
+    gemini_key = console.input("\nEnter Gemini API Key (leave blank to skip): ").strip()
     if gemini_key:
         set_config_value("gemini-api-key", gemini_key)
     
@@ -179,7 +182,7 @@ def main(
     if pipeline_mode == PipelineMode.ADAPTIVE and "gemini-api-key" not in config:
         print_error(
             "Adaptive mode requires Gemini Embeddings. "
-            "Run 'coalyx config set gemini-api-key <key>' first."
+            "Run '/config' to set your Gemini API key."
         )
         return
 
@@ -218,7 +221,8 @@ def main(
 
                 elif cmd == "/config":
                     console.print("\n[bold yellow]Configuration Setup[/bold yellow]")
-                    gemini_key = console.input("Enter Gemini API Key (leave blank to skip): ").strip()
+                    console.print("[dim]Get your Gemini API key here: https://aistudio.google.com/api-keys[/dim]")
+                    gemini_key = console.input("\nEnter Gemini API Key (leave blank to skip): ").strip()
                     if gemini_key:
                         set_config_value("gemini-api-key", gemini_key)
                         print_info("Gemini API Key updated.")

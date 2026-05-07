@@ -1,88 +1,95 @@
 # Coalyx CLI
 
-A powerful, multi-task AI Chat CLI featuring **Adaptive Uncertainty-Aware Reasoning**.
+A high-performance, multi-task AI Chat Terminal featuring **Adaptive Uncertainty-Aware Reasoning**. Coalyx isn't just another chat interface; it's an intelligent agent framework designed for complex problem solving and autonomous task execution.
 
-## Features
+---
 
-- **Multi-Model Support**: Use models from OpenAI, Google Gemini, Ollama via `litellm`.
-- **Instant Mode**: Fast, direct responses for basic tasks.
-- **Adaptive Reasoning Mode**: Samples multiple reasoning paths, measures semantic uncertainty via Gemini Embeddings, and triggers Self-Doubt reflection when the model is uncertain.
-- **Memory Management**: Context budget tracking with 4 zones, conversation compaction (`/compact`), and session persistence.
-- **Project Memory**: `COALYX.md` as a persistent project knowledge anchor loaded into every session.
-- **Extension Events**: Skills auto-activate on task match. Hooks fire on lifecycle events (SessionStart, SessionEnd, PreCommit, etc.).
-- **Rich Dashboard**: Real-time monitoring of tokens, context usage, generation speed, and memory zone.
+## Key Features
+
+### Intelligent Adaptive Reasoning
+Coalyx utilizes a sophisticated reasoning engine that evaluates complex queries through multiple internal perspectives. It autonomously identifies potential inconsistencies and performs real-time self-correction to ensure the most reliable and accurate output for mission-critical tasks.
+
+### High-Fidelity Session Memory
+Maintain perfect project awareness through an advanced context management architecture. Coalyx intelligently monitors interaction density and employs specialized state-compaction techniques to preserve long-term project knowledge while staying within model processing limits.
+
+### Unified Extension Ecosystem
+Boost your productivity with native support for system-level tools, real-time web intelligence, and external service orchestration via the Model Context Protocol (MCP). The modular skill system allows for seamless injection of custom domain-specific expertise.
+
+---
 
 ## Installation
 
 ```bash
-git clone <this_repo>
+# Clone the repository
+git clone https://github.com/Coalyx/coalyx-cli.git
 cd coalyx-cli
+
+# Install in editable mode
 pip install -e .
 ```
 
+---
+
 ## Quick Start
 
-Just run a single command to get started:
+Simply run the main command:
 
 ```bash
 coalyx
 ```
 
-If it's your first time running the CLI, Coalyx will automatically scaffold the `.coalyx/` directory and display an interactive **Setup Panel** right in your terminal so you can configure your API keys (you only need to do this once).
+### First-Run Experience
+If it's your first time, Coalyx will:
+1. Automatically scaffold the `.coalyx/` project directory.
+2. Launch an **Interactive Setup Panel** to configure your API keys.
+3. *Note*: Adaptive mode requires a Gemini API key for embeddings. Get one here: [aistudio.google.com/api-keys](https://aistudio.google.com/api-keys).
 
-Whenever you want to update your API keys, just type the following command directly in the chat interface:
-```text
-/config
-```
-
-### Advanced Run Options
+### Runtime Options
 
 ```bash
-# Enable deep reasoning (Adaptive Reasoning mode)
-coalyx --mode adaptive --model gemini/gemini-2.0-flash
+# Start with Adaptive Reasoning enabled
+coalyx --mode adaptive
 
-# Use a local model via Ollama
-coalyx --model ollama/gemma4:26b
+# Use a specific model (OpenAI, Gemini, or local Ollama)
+coalyx --model gpt-4o
+coalyx --model ollama/llama3
 ```
 
-## Commands
+---
 
-| Command | Description |
-|---|---|
-| `coalyx` | Launch the main interactive chat interface |
-| `coalyx --mode adaptive` | Run Coalyx with Adaptive Reasoning mode |
-| `coalyx --help` | View all launch parameters |
+## Chat Commands
 
-## Chat Slash Commands
+| Command | Action |
+|:---|:---|
+| `/config` | Open Setup Panel to update API keys/Settings |
+| `/model <name>` | Switch the active model on-the-fly |
+| `/mode` | Toggle between **Instant** and **Adaptive** reasoning |
+| `/compact` | Compress conversation history into a summary |
+| `/file <path>` | Inject the contents of a file into your prompt |
+| `/status` | View a detailed token & speed dashboard |
+| `/clear` | Reset the session while keeping project memory |
+| `/quit` | Save and exit |
 
-| Command | Description |
-|---|---|
-| `/config` | Open the Interactive Setup Panel to change API keys |
-| `/model <name>` | Switch the active AI model dynamically |
-| `/compact` | Compress conversation history |
-| `/clear` | Clear session and reload project memory |
-| `/mode` | Toggle Instant / Adaptive Reasoning |
-| `/status` | Show session dashboard |
-| `/help` | Show available commands |
-| `/quit` | Exit the chat |
+---
 
 ## Project Structure
 
-```
-coalyx-cli/
-├── .mcp.json              # MCP server connections
-├── COALYX.md              # Project memory anchor
-├── .coalyx/
-│   ├── settings.local.json
-│   ├── sessions/
-│   └── skills/
+```text
+.
+├── COALYX.md              # Project-wide persistent memory
+├── .mcp.json              # MCP Server configuration
+├── .coalyx/               # Runtime state (git-ignored)
+│   ├── settings.json      # Local configuration
+│   ├── sessions/          # Saved chat history
+│   └── skills/            # Custom agent instructions
 └── src/
-    ├── core/              # Pipeline, model, config, monitor, embeddings
-    ├── memory/            # Context tracking, compaction, session store
-    ├── extensions/        # Skills, hooks, registry
-    └── cli/               # UI and entry point
+    ├── core/              # Reasoning pipeline & embedding logic
+    ├── tools/             # Built-in functional tools
+    └── cli/               # Rich UI & Command handling
 ```
+
+---
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for details.
+Distributed under the **MIT License**. See `LICENSE` for more information.

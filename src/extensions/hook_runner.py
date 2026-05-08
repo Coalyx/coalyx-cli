@@ -94,18 +94,20 @@ def execute_shell_hook(command: str, context: Dict[str, Any] = None) -> HookResu
     Returns:
         HookResult with success status and captured output.
     """
-    import os
+    import shlex
+    from src.tools.sandbox import get_safe_env
 
-    env = os.environ.copy()
+    env = get_safe_env()
     if context:
         for key, value in context.items():
             env_key = f"COALYX_{key.upper()}"
             env[env_key] = str(value)
 
     try:
+        args = shlex.split(command)
         proc = subprocess.run(
-            command,
-            shell=True,
+            args,
+            shell=False,
             capture_output=True,
             text=True,
             timeout=30,

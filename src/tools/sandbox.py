@@ -7,7 +7,7 @@ the path, and verifies that the result stays within the project root.
 
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 # Module-level project root — set once via :func:`set_project_root`.
 _project_root: Optional[Path] = None
@@ -71,3 +71,24 @@ def resolve_safe_path(filepath: str) -> str:
         )
 
     return str(resolved)
+
+
+def get_safe_env() -> Dict[str, str]:
+    """Return a sanitized copy of the current environment variables.
+
+    Removes variables that commonly contain secrets or sensitive tokens
+    to prevent leakage to subprocesses (bash, repl, hooks).
+    """
+    env = os.environ.copy()
+    sensitive_patterns = [
+        "SECRET", "KEY", "TOKEN", "PASSWORD", "AUTH", 
+        "CREDENTIAL", "API", "AWS_", "GCP_", "AZURE_"
+    ]
+    
+    safe_env = {}
+    for k, v in env.items():
+        k_upper = k.upper()
+        if not any(p in k_upper for p in sensitive_patterns):
+            safe_env[k] = v
+            
+    return safe_env

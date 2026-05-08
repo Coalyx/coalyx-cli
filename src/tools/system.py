@@ -6,13 +6,26 @@ import re
 from pathlib import Path
 from src.tools.base import tool
 from src.tools.registry import register_tool
-from src.tools.sandbox import resolve_safe_path, PathSecurityError, get_project_root
+from src.tools.sandbox import (
+    PathSecurityError,
+    get_project_root,
+    get_safe_env,
+    resolve_safe_path,
+)
 
 @tool(name="bash", description="Execute a shell command.")
 def bash(command: str) -> str:
     try:
         cwd = str(get_project_root()) if get_project_root() else None
-        result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=120, cwd=cwd)
+        result = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=cwd,
+            env=get_safe_env(),
+        )
         out = result.stdout
         if result.stderr:
             out += "\nSTDERR:\n" + result.stderr
@@ -26,7 +39,14 @@ def powershell(command: str) -> str:
         return "Error: powershell tool is only available on Windows."
     try:
         cwd = str(get_project_root()) if get_project_root() else None
-        result = subprocess.run(["powershell", "-Command", command], capture_output=True, text=True, timeout=120, cwd=cwd)
+        result = subprocess.run(
+            ["powershell", "-Command", command],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=cwd,
+            env=get_safe_env(),
+        )
         out = result.stdout
         if result.stderr:
             out += "\nSTDERR:\n" + result.stderr

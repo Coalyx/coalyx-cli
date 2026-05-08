@@ -2,7 +2,7 @@ import subprocess
 import sys
 from src.tools.base import tool
 from src.tools.registry import register_tool
-from src.tools.sandbox import get_project_root
+from src.tools.sandbox import get_project_root, get_safe_env
 
 
 @tool(name="todo_write", description="Add an item to the current session's todo list.")
@@ -41,6 +41,7 @@ def repl(code: str) -> str:
             text=True,
             timeout=30,
             cwd=cwd,
+            env=get_safe_env(),
         )
         out = result.stdout
         if result.stderr:

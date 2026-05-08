@@ -51,6 +51,14 @@ def generate_tool_schema(func: Callable) -> Dict[str, Any]:
     sig = inspect.signature(func)
     doc = inspect.getdoc(func) or ""
     
+    param_docs = {}
+    for line in doc.split("\n"):
+        line = line.strip()
+        if ":" in line and ("Args:" not in line):
+            parts = line.split(":", 1)
+            p_name = parts[0].strip().split()[0]
+            param_docs[p_name] = parts[1].strip()
+
     properties = {}
     required = []
     
@@ -59,7 +67,7 @@ def generate_tool_schema(func: Callable) -> Dict[str, Any]:
             continue
             
         param_schema = _python_type_to_json_schema(param.annotation)
-        param_schema["description"] = f"Parameter: {name}"
+        param_schema["description"] = param_docs.get(name, f"The {name} for the tool.")
         
         properties[name] = param_schema
         if param.default == inspect.Parameter.empty:

@@ -172,30 +172,49 @@ def interactive_setup():
         
     print_info("Setup complete! Starting chat...\n")
 
+# Global to hold active status for tool confirmation pauses
+_active_status = None
+
 def _build_confirmation_callback():
     """Build a Rich-based confirmation callback for dangerous tool operations."""
     from src.tools.confirmation import DANGER_HIGH, DANGER_MEDIUM
+    from rich.syntax import Syntax
+    from rich.panel import Panel
 
     def _confirm(tool_name: str, kwargs: dict, danger_level: str) -> bool:
-        if danger_level == DANGER_HIGH:
-            console.print(f"\n  [bold red]DANGEROUS TOOL:[/bold red] [bold]{tool_name}[/bold]")
-            # Show the command/code being executed
-            if tool_name in ("bash", "powershell"):
-                console.print(f"  [dim]Command:[/dim] {kwargs.get('command', '?')}")
-            elif tool_name == "repl":
-                code = kwargs.get("code", "?")
-                preview = code[:200] + ("..." if len(code) > 200 else "")
-                console.print(f"  [dim]Code:[/dim] {preview}")
-        elif danger_level == DANGER_MEDIUM:
-            console.print(f"\n  [bold yellow]File operation:[/bold yellow] [bold]{tool_name}[/bold]")
-            if "filepath" in kwargs:
-                console.print(f"  [dim]Path:[/dim] {kwargs['filepath']}")
+        global _active_status
+        
+        # Temporarily stop the thinking spinner to allow clean input
+        if _active_status:
+            _active_status.stop()
 
         try:
-            answer = console.input("  [bold]Allow? [y/N]:[/bold] ").strip().lower()
+            if danger_level == DANGER_HIGH:
+                console.print(f"\n  [bold red]DANGEROUS TOOL:[/bold red] [bold]{tool_name}[/bold]")
+                
+                if tool_name in ("bash", "powershell"):
+                    console.print(f"  [dim]Command:[/dim] {kwargs.get('command', '?')}")
+                elif tool_name == "repl":
+                    code = kwargs.get("code", "?")
+                    # No truncation, show full code with syntax highlighting
+                    syntax = Syntax(code, "python", theme="monokai", line_numbers=True)
+                    console.print(Panel(syntax, title="[bold yellow]Python REPL Execution[/bold yellow]", border_style="red"))
+            elif danger_level == DANGER_MEDIUM:
+                console.print(f"\n  [bold yellow]File operation:[/bold yellow] [bold]{tool_name}[/bold]")
+                if "filepath" in kwargs:
+                    console.print(f"  [dim]Path:[/dim] {kwargs['filepath']}")
+
+            # Prompt for input
+            console.print("")
+            answer = console.input("  [bold reverse] ACTION REQUIRED [/bold reverse] [bold blue]Allow execution? (y/n): [/bold blue]").strip().lower()
+            return answer in ("y", "yes")
         except (EOFError, KeyboardInterrupt):
+            console.print("\n  [red]Execution denied.[/red]")
             return False
-        return answer in ("y", "yes")
+        finally:
+            # Resume the thinking spinner
+            if _active_status:
+                _active_status.start()
 
     return _confirm
 
@@ -463,8 +482,11 @@ def main(
             workspace.append_message(user_msg)
 
             old_len = len(messages)
-            with console.status("[bold green]Thinking...[/bold green]", spinner="dots"):
+            with console.status("[bold green]Thinking...[/bold green]", spinner="dots") as status:
+                global _active_status
+                _active_status = status
                 result, debug_info = run_pipeline(messages, model_config, pipeline_mode)
+                _active_status = None
 
             # --- Handle Uncertainty Reports ---
             if "uncertainty_report" in debug_info:
@@ -503,17 +525,24 @@ def main(
                 else:
                     messages.append(Message(role=Role.USER, content=clarification))
                     
-                # Rerun pipeline with the new context
-                with console.status("[bold green]Resuming...[/bold green]", spinner="dots"):
-                    result, debug_info = run_pipeline(messages, model_config, pipeline_mode)
+                # Rerun pipeline with the new context (marking it as a loop)
+                with console.status("[bold green]Resuming...[/bold green]", spinner="dots") as status:
+                    _active_status = status
+                    result, debug_info = run_pipeline(messages, model_config, pipeline_mode, is_loop=True)
+                    _active_status = None
                     
                 if "uncertainty_report" in debug_info:
                     workspace.log_uncertainty(debug_info["uncertainty_report"])
                     
-                # If it asks AGAIN, we just take the fallback answer (no infinite loops)
+                # If it asks AGAIN, we pivot to a productive fallback instead of a dead-end
                 if isinstance(result, ClarificationRequest):
                     from src.core.schema import GenerationResult
-                    result = GenerationResult(content="Could not resolve uncertainty. " + result.fallback_plan, tokens_used=0, duration_sec=0.0)
+                    assumptions = "\n".join(f"- {a}" for a in result.default_assumptions)
+                    content = (
+                        f"I've encountered persistent ambiguity. {result.fallback_plan}\n\n"
+                        f"Proceeding with these assumptions:\n{assumptions}"
+                    )
+                    result = GenerationResult(content=content, tokens_used=0, duration_sec=0.0)
 
             monitor.update(
                 tokens_used=result.tokens_used,

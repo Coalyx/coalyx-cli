@@ -9,7 +9,7 @@ from src.tools import get_all_tool_schemas, execute_tool
 import json
 import rich
 
-STAGE1_CANDIDATES = 3
+STAGE1_CANDIDATES = 5
 STAGE1_TEMPERATURE = 0.5
 STAGE2_TEMPERATURE = 0.9
 CERTAINTY_THRESHOLD = 0.75
@@ -96,8 +96,8 @@ def run_instant_pipeline(
 
 
 def run_adaptive_pipeline(
-    messages: List[Message], config: ModelConfig, tools: list = None
-) -> Tuple[GenerationResult, dict]:
+    messages: List[Message], config: ModelConfig, tools: list = None, is_loop: bool = False
+) -> Tuple[Union[GenerationResult, ClarificationRequest], dict]:
     """Run the Adaptive Uncertainty-Aware Reasoning pipeline.
 
     Stage 1: Generate N candidates in a single batched call (saves API
@@ -176,7 +176,13 @@ def run_adaptive_pipeline(
     rich.print("  [dim]Analyzing uncertainty structured report...[/dim]")
     report = analyze_uncertainty(messages, candidates, consistency, config)
     debug_info["uncertainty_report"] = report.model_dump()
-    action = decide_action(report)
+    last_user_message = ""
+    for m in reversed(messages):
+        if m.role == Role.USER:
+            last_user_message = m.content
+            break
+
+    action = decide_action(report, last_user_message=last_user_message, is_loop=is_loop)
     
     rich.print(f"  [dim]Controller recommended action: [bold]{action.value}[/bold][/dim]")
     
@@ -226,14 +232,28 @@ def run_adaptive_pipeline(
         tools=tools,
     )[0]
 
+    # HARD RULE 3 & 4: Guardrail against Unverified Synthesis
+    if action == UncertaintyAction.VERIFY_WITH_TOOL and not getattr(final_res, "tool_calls", None):
+        high_conflict = report.claim_conflicts and any(c.severity == "high" for c in report.claim_conflicts)
+        if high_conflict:
+            warning = (
+                "⚠️ **UNVERIFIED SYNTHESIS WARNING** ⚠️\n"
+                "I detected severe logical conflicts in my reasoning and attempted to resolve them. "
+                "However, I failed to programmatically verify the result using tools. "
+                "The following explanation is an **unverified hypothesis** and may contain logical or arithmetic errors:\n\n"
+                "---\n\n"
+            )
+            final_res.content = warning + (final_res.content or "")
+
     final_res.tokens_used += total_tokens
+
     final_res.duration_sec += total_duration
 
     return final_res, debug_info
 
 
 def run_pipeline(
-    messages: List[Message], config: ModelConfig, mode: PipelineMode
+    messages: List[Message], config: ModelConfig, mode: PipelineMode, is_loop: bool = False
 ) -> Tuple[Union[GenerationResult, ClarificationRequest], dict]:
     """Route to the appropriate pipeline based on mode.
 
@@ -241,6 +261,7 @@ def run_pipeline(
         messages: Conversation history.
         config: Model configuration.
         mode: Pipeline mode (Instant or Adaptive).
+        is_loop: Whether this is a retry from a previous clarification.
 
     Returns:
         Tuple of (GenerationResult, debug info dict).
@@ -255,7 +276,7 @@ def run_pipeline(
             res = run_instant_pipeline(current_messages, config, tools if tools else None)
             debug = {}
         else:
-            res, debug = run_adaptive_pipeline(current_messages, config, tools if tools else None)
+            res, debug = run_adaptive_pipeline(current_messages, config, tools if tools else None, is_loop=is_loop)
         
         final_debug.update(debug)
 
@@ -271,8 +292,8 @@ def run_pipeline(
                 rich.print(f"  [dim]Executing tool: [bold]{tc.name}[/bold]...[/dim]")
                 try:
                     args = json.loads(tc.arguments) if isinstance(tc.arguments, str) else tc.arguments
-                except:
-                    args = {}
+                except Exception as e:
+                    args = {"__raw_arguments__": tc.arguments, "error": str(e)}
                 output = execute_tool(tc.name, args)
 
                 # Determine execution status from output

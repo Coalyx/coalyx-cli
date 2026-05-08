@@ -22,6 +22,10 @@ Classify uncertainty into the following flags if they apply:
 - logical_conflict (Candidates disagree logically)
 - computational_verifiability (Can be tested via code)
 - safety_or_permission_risk (Modifies system state or needs permission)
+- IMPORTANT: Distinguish between 'Solver Errors' and 'User Ambiguity'.
+- If a candidate answer makes an assumption that is explicitly contradicted or already defined in the user's prompt (e.g., the user says "alpha: Z -> Z" but a candidate assumes alpha is binary), this is a SOLVER ERROR. Do NOT ask the user for clarification in this case. Instead, mark it as a logical conflict and recommend a computable check or research.
+- Only use 'ASK_USER' for true 'User Intent' ambiguity where the prompt is genuinely underspecified.
+- If the user explicitly asks you to "research", "experiment", or "use tools" in the history, prioritize 'researchable' or 'computable' over 'ask_user'.
 
 For each conflict or unknown, specify its severity (low, medium, high) and whether it can be resolved by asking the user, researching, or verifying with a tool.
 
@@ -151,49 +155,60 @@ def _fallback_report(consistency: float) -> UncertaintyReport:
     )
 
 
-def decide_action(report: UncertaintyReport) -> UncertaintyAction:
+def decide_action(report: UncertaintyReport, last_user_message: str = "", is_loop: bool = False) -> UncertaintyAction:
     """Deterministic rule engine to choose the best action.
 
-    Priority order (highest to lowest):
+    Priority order:
     1. Safety/permission risk → ASK_USER
-    2. User intent ambiguity with clarification questions → ASK_USER
-    3. High-severity claim conflicts → ADVERSARIAL_REVIEW
-    4. Researchable unknowns with research questions → RESEARCH
-    5. Computable checks available → VERIFY_WITH_TOOL
-    6. Low uncertainty (score ≤ 0.3 or agreement ≥ 0.85) → ANSWER
-    7. Default → ANSWER_WITH_CAVEATS
-
-    The LLM's ``recommended_action`` field is intentionally ignored.
+    2. User redirection (explicitly asks for tools/research) → RESEARCH/VERIFY
+    3. User intent ambiguity (True Ambiguity) → ASK_USER (unless in loop)
+    4. Researchable unknowns → RESEARCH
+    5. Computable checks → VERIFY_WITH_TOOL
+    6. High-severity logical conflicts → ADVERSARIAL_REVIEW
+    7. Low uncertainty → ANSWER
     """
-    # PRIORITY 1: Safety risks are always escalated to user
+    
+    high_conflict = report.claim_conflicts and any(c.severity == "high" for c in report.claim_conflicts)
+    has_computable = bool(report.computable_checks)
+    has_research = bool(report.research_questions)
+    low_score = report.total_score < 0.55
+
+    # HARD RULE 1 & 2: High conflict or low score with tools available MUST use tools
+    if (high_conflict or low_score) and has_computable:
+        return UncertaintyAction.VERIFY_WITH_TOOL
+
+    if high_conflict and has_research:
+        return UncertaintyAction.RESEARCH
+
+    # PRIORITY 1: Safety risks always escalate
     if report.risk_flags:
         return UncertaintyAction.ASK_USER
 
-    # PRIORITY 2: User intent is unclear — ask for clarification
-    if report.clarification_questions and any(
-        u.kind == "user_intent" for u in report.unknowns
-    ):
+    # PRIORITY 2: Detect if user is pushing for self-resolution
+    redirection_keywords = ["research", "search", "experiment", "toy", "tool", "code", "run", "verify", "check yourself"]
+    user_wants_tools = any(kw in last_user_message.lower() for kw in redirection_keywords)
+    
+    if user_wants_tools:
+        if has_computable:
+            return UncertaintyAction.VERIFY_WITH_TOOL
+        if has_research:
+            return UncertaintyAction.RESEARCH
+
+    # PRIORITY 3: True user intent ambiguity
+    if not is_loop and report.clarification_questions and any(u.kind == "user_intent" for u in report.unknowns):
         return UncertaintyAction.ASK_USER
 
-    # PRIORITY 3: Researchable questions — external research
-    if report.research_questions and any(
-        u.researchable for u in report.unknowns
-    ):
+    # PRIORITY 4: Research
+    if has_research and any(u.researchable for u in report.unknowns):
         return UncertaintyAction.RESEARCH
 
-    # PRIORITY 4: Computationally verifiable — tool verification
-    if report.computable_checks:
+    # PRIORITY 5: Tools
+    if has_computable:
         return UncertaintyAction.VERIFY_WITH_TOOL
 
-    # PRIORITY 5: High-severity logical conflicts — adversarial review
-    if report.claim_conflicts and any(
-        c.severity == "high" for c in report.claim_conflicts
-    ):
-        return UncertaintyAction.ADVERSARIAL_REVIEW
-
-    # PRIORITY 6: Low uncertainty — answer directly
-    if report.total_score <= 0.3 or report.semantic_agreement >= 0.85:
+    # PRIORITY 6: Low uncertainty
+    if not high_conflict and (report.total_score <= 0.3 or report.semantic_agreement >= 0.85):
         return UncertaintyAction.ANSWER
 
-    # DEFAULT: Medium uncertainty — answer with explicit caveats
     return UncertaintyAction.ANSWER_WITH_CAVEATS
+

@@ -35,20 +35,23 @@ def get_venv_python(coalyx_dir: Path) -> Path:
     return bin_dir / exe
 
 def setup_global_venv(coalyx_dir: Path) -> None:
-    """Create the virtual environment and install required packages if it doesn't exist."""
+    """Create the virtual environment and install required packages if not already complete."""
     venv_dir = get_venv_dir(coalyx_dir)
-    if venv_dir.exists():
+    sentinel = venv_dir / ".setup_complete"
+    
+    if sentinel.exists():
         return
         
     console.print("[bold yellow]Initializing Coalyx global environment...[/bold yellow]")
     console.print("[dim]This may take a few minutes as data science packages are installed.[/dim]")
     
-    # Create venv
-    try:
-        venv.create(venv_dir, with_pip=True)
-    except Exception as e:
-        console.print(f"[bold red]Failed to create virtual environment:[/bold red] {e}")
-        return
+    # Create venv if it doesn't exist
+    if not venv_dir.exists():
+        try:
+            venv.create(venv_dir, with_pip=True)
+        except Exception as e:
+            console.print(f"[bold red]Failed to create virtual environment:[/bold red] {e}")
+            return
 
     python_exe = get_venv_python(coalyx_dir)
     
@@ -72,12 +75,16 @@ def setup_global_venv(coalyx_dir: Path) -> None:
 
     # Install packages
     console.print("[bold cyan]Installing packages...[/bold cyan]")
+    # Prepare environment for uv to recognize the venv
+    env = os.environ.copy()
+    env["VIRTUAL_ENV"] = str(venv_dir)
+    
     try:
         if has_uv and uv_exe.exists():
             console.print("[dim](Using 'uv' bootstrap for 10x faster installation)[/dim]")
             subprocess.run(
                 [str(uv_exe), "pip", "install"] + REQUIRED_PACKAGES,
-                check=True
+                check=True, env=env
             )
         else:
             # Fallback to standard pip
@@ -90,6 +97,7 @@ def setup_global_venv(coalyx_dir: Path) -> None:
                 [str(python_exe), "-m", "pip", "install"] + REQUIRED_PACKAGES + ["--no-input"],
                 check=True
             )
+        sentinel.touch()
         console.print("[bold green]Global environment ready![/bold green]")
         time.sleep(1)
         console.clear()

@@ -71,7 +71,7 @@ def _get_project_root() -> Path:
 
 def _get_coalyx_dir() -> Path:
     """Resolve the .coalyx runtime directory."""
-    return _get_project_root() / COALYX_DIR
+    return Path.home() / COALYX_DIR
 
 
 def _load_hooks_from_settings(registry, coalyx_dir: Path) -> None:
@@ -96,14 +96,49 @@ def _load_hooks_from_settings(registry, coalyx_dir: Path) -> None:
 
 def ensure_initialized():
     """Silently scaffold .coalyx/ directory if it doesn't exist."""
+    import shutil
+    from src.core.env import setup_global_venv
+
     root = _get_project_root()
-    coalyx_dir = root / COALYX_DIR
+    coalyx_dir = _get_coalyx_dir()
     if not coalyx_dir.exists():
+        coalyx_dir.mkdir(parents=True, exist_ok=True)
         (coalyx_dir / SESSIONS_DIR).mkdir(parents=True, exist_ok=True)
         (coalyx_dir / SKILLS_DIR).mkdir(parents=True, exist_ok=True)
         settings_path = coalyx_dir / SETTINGS_FILE
         settings_path.write_text(json.dumps({"hooks": []}, indent=2))
-        scaffold_memory_file(root)
+        
+    scaffold_memory_file(root)
+    
+    global_mcp = coalyx_dir / ".mcp.json"
+    if not global_mcp.exists():
+        local_mcp = root / ".mcp.json"
+        if local_mcp.exists():
+            try:
+                shutil.move(str(local_mcp), str(global_mcp))
+            except OSError:
+                pass
+        else:
+            default_mcp = {
+                "mcpServers": {
+                    "playwright": {
+                        "command": "npx",
+                        "args": ["-y", "@executeautomation/playwright-mcp-server"]
+                    },
+                    "jupyter": {
+                        "command": "uvx",
+                        "args": ["jupyter-mcp-server@latest"],
+                        "env": {
+                            "JUPYTER_URL": "http://localhost:8888",
+                            "JUPYTER_TOKEN": "MY_TOKEN",
+                            "ALLOW_IMG_OUTPUT": "true"
+                        }
+                    }
+                }
+            }
+            global_mcp.write_text(json.dumps(default_mcp, indent=2), encoding="utf-8")
+            
+    setup_global_venv(coalyx_dir)
 
 def interactive_setup():
     """Prompt user for essential API keys."""

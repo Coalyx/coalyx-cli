@@ -11,11 +11,13 @@ from src.tools.sandbox import (
     get_project_root,
     get_safe_env,
     resolve_safe_path,
+    validate_no_package_installation,
 )
 
 @tool(name="bash", description="Execute a shell command.")
 def bash(command: str) -> str:
     try:
+        validate_no_package_installation(command)
         cwd = str(get_project_root()) if get_project_root() else None
         result = subprocess.run(
             command,
@@ -38,6 +40,7 @@ def powershell(command: str) -> str:
     if os.name != "nt":
         return "Error: powershell tool is only available on Windows."
     try:
+        validate_no_package_installation(command)
         cwd = str(get_project_root()) if get_project_root() else None
         result = subprocess.run(
             ["powershell", "-Command", command],

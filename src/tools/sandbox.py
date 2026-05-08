@@ -73,6 +73,21 @@ def resolve_safe_path(filepath: str) -> str:
     return str(resolved)
 
 
+def validate_no_package_installation(command: str) -> None:
+    """Raise PermissionError if the command attempts to install packages."""
+    cmd_lower = command.lower()
+    blocked_patterns = [
+        "pip install", "pip3 install", "pip2 install",
+        "conda install", "poetry add",
+        "uv pip install", "uv add"
+    ]
+    for pattern in blocked_patterns:
+        if pattern in cmd_lower:
+            raise PermissionError(
+                f"Agent is not allowed to install packages. Attempted: '{pattern}'"
+            )
+
+
 def get_safe_env() -> Dict[str, str]:
     """Return a sanitized copy of the current environment variables.
 
@@ -90,5 +105,10 @@ def get_safe_env() -> Dict[str, str]:
         k_upper = k.upper()
         if not any(p in k_upper for p in sensitive_patterns):
             safe_env[k] = v
+            
+    from src.core.env import get_venv_bin_dir
+    from pathlib import Path
+    venv_bin = str(get_venv_bin_dir(Path.home() / ".coalyx"))
+    safe_env["PATH"] = f"{venv_bin}{os.pathsep}{safe_env.get('PATH', '')}"
             
     return safe_env

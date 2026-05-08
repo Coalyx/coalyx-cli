@@ -8,7 +8,9 @@ from src.tools.sandbox import get_project_root, get_safe_env
 @tool(name="todo_write", description="Add an item to the current session's todo list.")
 def todo_write(task: str) -> str:
     try:
-        with open(".coalyx/TODO.md", "a") as f:
+        from pathlib import Path
+        todo_path = Path.home() / ".coalyx" / "TODO.md"
+        with open(todo_path, "a") as f:
             f.write(f"- [ ] {task}\n")
         return f"Added '{task}' to TODO list."
     except Exception as e:
@@ -34,9 +36,12 @@ def repl(code: str) -> str:
     so it cannot access or mutate Coalyx's own memory space.
     """
     try:
+        from pathlib import Path
+        from src.core.env import get_venv_python
+        venv_python = str(get_venv_python(Path.home() / ".coalyx"))
         cwd = str(get_project_root()) if get_project_root() else None
         result = subprocess.run(
-            [sys.executable, "-c", code],
+            [venv_python, "-c", code],
             capture_output=True,
             text=True,
             timeout=30,

@@ -164,15 +164,11 @@ def run_adaptive_pipeline(
     rich.print(f"  [dim]Controller action: [bold]{action.value}[/bold][/dim]")
 
     # --- Step 4: Execute ---
-
-    # Fast path: return draft directly (with finalizer check)
     if action in (UncertaintyAction.ANSWER, UncertaintyAction.ANSWER_WITH_CAVEATS):
         if action == UncertaintyAction.ANSWER_WITH_CAVEATS and report.risk_flags:
             caveat = f"\n\n> Note: {report.risk_flags[0]}"
             draft.content = (draft.content or "") + caveat
         return _apply_finalizer(draft, messages, config, debug_info), debug_info
-
-    # Clarification path
     if action == UncertaintyAction.ASK_USER:
         rich.print("  [dim yellow]Action: ask user for clarification[/dim yellow]")
         question = (
@@ -187,7 +183,6 @@ def run_adaptive_pipeline(
         )
         return req, debug_info
 
-    # Refinement path: research / verify / adversarial review
     rich.print("  [dim yellow]Action: refinement pass[/dim yellow]")
     debug_info["refinement_triggered"] = True
 
@@ -211,7 +206,6 @@ def run_adaptive_pipeline(
         tools=tools,
     )[0]
 
-    # Guardrail: warn if tool verification was requested but no tool was called
     if action == UncertaintyAction.VERIFY_WITH_TOOL and not getattr(refined, "tool_calls", None):
         high_conflict = report.claim_conflicts and any(c.severity == "high" for c in report.claim_conflicts)
         if high_conflict:
@@ -224,8 +218,6 @@ def run_adaptive_pipeline(
 
     refined.tokens_used += draft.tokens_used
     refined.duration_sec += draft.duration_sec
-
-    # Tool calls bypass finalizer — they're not final text yet
     if getattr(refined, "tool_calls", None):
         return refined, debug_info
 

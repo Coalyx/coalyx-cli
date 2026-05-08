@@ -3,13 +3,14 @@ import sys
 import venv
 import subprocess
 import shutil
+import time
 from pathlib import Path
 from rich.console import Console
 
 console = Console()
 
 REQUIRED_PACKAGES = [
-    "numpy", "scipy", "pandas", "polars", "pyarrow", "sympy",
+    "numpy", "scipy", "pandas", "pyarrow", "sympy",
     "statsmodels", "scikit-learn", "matplotlib", "seaborn",
     "plotly", "networkx", "numba", "openpyxl", "xlsxwriter",
     "python-dateutil", "pytz", "tqdm", "requests",
@@ -51,24 +52,48 @@ def setup_global_venv(coalyx_dir: Path) -> None:
 
     python_exe = get_venv_python(coalyx_dir)
     
-    # Install packages
-    with console.status("[bold cyan]Installing packages...[/bold cyan]", spinner="dots"):
+    # Bootstrap 'uv' into the venv for maximum speed and reliability
+    console.print("[bold cyan]Bootstrapping environment...[/bold cyan]")
+    
+    # Try to install uv into the venv first
+    with console.status("[dim]Installing 'uv' bootstrap...[/dim]", spinner="dots"):
         try:
-            # Upgrade pip first
             subprocess.run(
-                [str(python_exe), "-m", "pip", "install", "--upgrade", "pip"],
+                [str(python_exe), "-m", "pip", "install", "uv", "--no-input"],
                 check=True, capture_output=True
             )
-            
-            # Install all required packages
+            has_uv = True
+        except Exception:
+            has_uv = False
+
+    # Find the uv binary inside the venv
+    bin_dir = get_venv_bin_dir(coalyx_dir)
+    uv_exe = bin_dir / ("uv.exe" if os.name == "nt" else "uv")
+
+    # Install packages
+    console.print("[bold cyan]Installing packages...[/bold cyan]")
+    try:
+        if has_uv and uv_exe.exists():
+            console.print("[dim](Using 'uv' bootstrap for 10x faster installation)[/dim]")
             subprocess.run(
-                [str(python_exe), "-m", "pip", "install"] + REQUIRED_PACKAGES,
-                check=True, capture_output=True
+                [str(uv_exe), "pip", "install"] + REQUIRED_PACKAGES,
+                check=True
             )
-            console.print("[bold green]Global environment ready![/bold green]")
-        except subprocess.CalledProcessError as e:
-            console.print("[bold red]Failed to install packages.[/bold red]")
-            if e.stderr:
-                console.print(f"[dim]{e.stderr.decode()}[/dim]")
-            # Cleanup broken venv
-            shutil.rmtree(venv_dir, ignore_errors=True)
+        else:
+            # Fallback to standard pip
+            console.print("[dim](Bootstrap failed, falling back to standard pip)[/dim]")
+            subprocess.run(
+                [str(python_exe), "-m", "pip", "install", "--upgrade", "pip", "--no-input"],
+                check=True
+            )
+            subprocess.run(
+                [str(python_exe), "-m", "pip", "install"] + REQUIRED_PACKAGES + ["--no-input"],
+                check=True
+            )
+        console.print("[bold green]Global environment ready![/bold green]")
+        time.sleep(1)
+        console.clear()
+    except subprocess.CalledProcessError as e:
+        console.print("[bold red]Failed to install packages.[/bold red]")
+        # Cleanup broken venv
+        shutil.rmtree(venv_dir, ignore_errors=True)

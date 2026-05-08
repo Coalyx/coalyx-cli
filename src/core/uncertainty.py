@@ -22,6 +22,10 @@ Classify uncertainty into the following flags if they apply:
 - logical_conflict (Candidates disagree logically)
 - computational_verifiability (Can be tested via code)
 - safety_or_permission_risk (Modifies system state or needs permission)
+- extrapolation_from_small_sample (Inferring a general formula/theorem from a small toy experiment without formal proof or independent holdout verification)
+- target_scale_far_beyond_verified_range (The verified data points are much smaller than the target query scale)
+- unproven_sequence_formula (A pattern is hypothesized but lacks a rigorous derivation)
+- failed_tool_call (A previous tool call failed, leaving the hypothesis unverified)
 - IMPORTANT: Distinguish between 'Solver Errors' and 'User Ambiguity'.
 - If a candidate answer makes an assumption that is explicitly contradicted or already defined in the user's prompt (e.g., the user says "alpha: Z -> Z" but a candidate assumes alpha is binary), this is a SOLVER ERROR. Do NOT ask the user for clarification in this case. Instead, mark it as a logical conflict and recommend a computable check or research.
 - Only use 'ASK_USER' for true 'User Intent' ambiguity where the prompt is genuinely underspecified.
@@ -181,8 +185,21 @@ def decide_action(report: UncertaintyReport, last_user_message: str = "", is_loo
         return UncertaintyAction.RESEARCH
 
     # PRIORITY 1: Safety risks always escalate
-    if report.risk_flags:
+    if report.risk_flags and any(f in ["safety_or_permission_risk", "permission_risk"] for f in report.risk_flags):
         return UncertaintyAction.ASK_USER
+
+    # PRIORITY 1.5: Evidence Sufficiency Gate (Premature Extrapolation)
+    premature_flags = {"extrapolation_from_small_sample", "unproven_sequence_formula", "target_scale_far_beyond_verified_range"}
+    if report.risk_flags and any(f in premature_flags for f in report.risk_flags):
+        if has_computable:
+            return UncertaintyAction.VERIFY_WITH_TOOL
+        return UncertaintyAction.ADVERSARIAL_REVIEW
+
+    # PRIORITY 1.6: Failed Tool Call Fallback
+    if report.risk_flags and "failed_tool_call" in report.risk_flags:
+        if has_computable:
+            return UncertaintyAction.VERIFY_WITH_TOOL
+        return UncertaintyAction.ANSWER_WITH_CAVEATS
 
     # PRIORITY 2: Detect if user is pushing for self-resolution
     redirection_keywords = ["research", "search", "experiment", "toy", "tool", "code", "run", "verify", "check yourself"]

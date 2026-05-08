@@ -54,10 +54,6 @@ def save_config(config_data: Dict[str, Any]) -> None:
     with open(CONFIG_FILE, "w") as f:
         json.dump(config_data, f, indent=4)
 
-def get_config_value(key: str, default: Any = None) -> Any:
-    """Get a specific configuration value."""
-    config = load_config()
-    return config.get(key, default)
 
 def set_config_value(key: str, value: Any) -> None:
     """Set a specific configuration value."""

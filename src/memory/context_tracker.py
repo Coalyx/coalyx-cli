@@ -1,11 +1,6 @@
 from src.core.schema import ContextBudget, ContextZone
 
-ZONE_THRESHOLDS = {
-    ContextZone.FREE: 0.0,
-    ContextZone.MONITORED: 0.5,
-    ContextZone.COMPACT_SUGGESTED: 0.7,
-    ContextZone.CRITICAL: 0.9,
-}
+
 
 
 def create_budget(max_tokens: int) -> ContextBudget:
@@ -65,15 +60,3 @@ def get_zone(budget: ContextBudget) -> ContextZone:
         return ContextZone.FREE
 
 
-def get_usage_ratio(budget: ContextBudget) -> float:
-    """Get the usage ratio as a float between 0.0 and 1.0.
-
-    Args:
-        budget: Current context budget.
-
-    Returns:
-        Usage ratio clamped to [0.0, 1.0].
-    """
-    if budget.total_capacity == 0:
-        return 1.0
-    return min(budget.used_tokens / budget.total_capacity, 1.0)

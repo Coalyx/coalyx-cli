@@ -32,8 +32,6 @@ class SessionMonitor:
     def should_auto_compact(self) -> bool:
         return self.budget.zone == ContextZone.CRITICAL
 
-    def should_suggest_compact(self) -> bool:
-        return self.budget.zone == ContextZone.COMPACT_SUGGESTED
 
     def update(self, tokens_used: int, duration_sec: float, model_name: str) -> None:
         """Update stats after a generation cycle."""

@@ -72,10 +72,6 @@ class SessionWorkspace:
 
     # --- Artifacts ---
 
-    def save_artifact(self, name: str, content: str) -> Path:
-        path = self.root / "artifacts" / name
-        path.write_text(content, encoding="utf-8")
-        return path
 
     def list_artifacts(self) -> List[str]:
         artifacts_dir = self.root / "artifacts"

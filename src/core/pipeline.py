@@ -25,6 +25,7 @@ METACOGNITIVE_SYSTEM_PROMPT = (
     "- What you know with high confidence.\n"
     "- What you are uncertain about or assuming.\n"
     "- Whether the answer requires external data, computation, or user clarification.\n\n"
+    "For math or code verification, strictly use `bash` or `notebook_edit`. Do NOT use `write_file` for calculations.\n\n"
     "Then provide your best answer. Clearly mark uncertain claims. "
     "Do not pad the response — be direct and concise."
 )
@@ -39,7 +40,7 @@ RESOLUTION_PROMPT = (
     "1. Identify any claims that are uncertain, conflicting, or unverified.\n"
     "2. If there are EXTRA INSTRUCTIONS below, you MUST follow them using your "
     "available tools BEFORE providing your final answer. Do NOT rely on intuition "
-    "if tools can provide facts.\n"
+    "if tools can provide facts. Use `bash` or `notebook_edit` for computation, NEVER `write_file`.\n"
     "3. Produce the strongest final answer based on evidence.\n"
     "4. Explicitly state any remaining caveats."
 )
@@ -260,7 +261,31 @@ def run_pipeline(
             res = run_instant_pipeline(current_messages, config, tools if tools else None)
             debug = {}
         else:
-            res, debug = run_adaptive_pipeline(current_messages, config, tools if tools else None, is_loop=is_loop)
+            if current_messages and current_messages[-1].role == Role.TOOL:
+                rich.print("  [dim yellow]Action: final synthesis after tools[/dim yellow]")
+                synth_prompt = (
+                    "You have executed tools to verify the uncertainties. The results are above.\n"
+                    "Synthesize the final answer based on the evidence.\n"
+                    "RULES:\n"
+                    "- Do NOT use any more tools.\n"
+                    "- Do NOT include any 'Wait', 'Let me re-check', or self-correction loops.\n"
+                    "- Provide one concise proof or explanation, followed by the clear final answer."
+                )
+                synth_msg = Message(role=Role.USER, content=synth_prompt)
+                synth = generate_response(
+                    messages=current_messages + [synth_msg],
+                    model_name=config.model_name,
+                    temperature=0.3,
+                    max_tokens=config.max_tokens,
+                    n=1,
+                    tools=None,
+                )[0]
+                debug = {"synthesis_triggered_after_tools": True}
+                res = _apply_finalizer(synth, current_messages, config, debug)
+                final_debug.update(debug)
+                return res, final_debug
+            else:
+                res, debug = run_adaptive_pipeline(current_messages, config, tools if tools else None, is_loop=is_loop)
 
         final_debug.update(debug)
 

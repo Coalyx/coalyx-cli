@@ -3,45 +3,99 @@ from typing import List, Tuple, Union
 from src.core.schema import (
     Message, ModelConfig, GenerationResult, PipelineMode, Role,
     ToolCallLog, ClarificationRequest, UncertaintyAction,
-    AdaptivePathConfig, PathBudget,
 )
 from src.core.model import generate_response
-from src.core.config import load_config
-from src.core.path_planner import profile_task, plan_initial_paths, request_additional_paths
-from src.core.path_auditor import audit_paths, should_expand_paths
 from src.core.uncertainty import analyze_uncertainty, decide_action
 from src.tools import get_all_tool_schemas, execute_tool
 from datetime import datetime, timezone
 import json
 import rich
 
-PATH_TEMPERATURE = 0.5
-SYNTHESIS_TEMPERATURE = 0.9
 MAX_TOOL_ROUNDS = 10
+DRAFT_TEMPERATURE = 0.5
+SYNTHESIS_TEMPERATURE = 0.7
 
-SELF_DOUBT_PROMPT = (
-    "We generated multiple candidate answers to the same query. "
-    "They diverge in the following ways:\n\n"
-    "{candidates}\n\n"
+# Finalizer thresholds for runaway detection
+_RUNAWAY_WAIT_THRESHOLD = 2
+_RUNAWAY_FINAL_ANSWER_THRESHOLD = 2
+
+METACOGNITIVE_SYSTEM_PROMPT = (
+    "You are a rigorous reasoning assistant.\n"
+    "Before answering, briefly identify:\n"
+    "- What you know with high confidence.\n"
+    "- What you are uncertain about or assuming.\n"
+    "- Whether the answer requires external data, computation, or user clarification.\n\n"
+    "Then provide your best answer. Clearly mark uncertain claims. "
+    "Do not pad the response — be direct and concise."
+)
+
+RESOLUTION_PROMPT = (
+    "Review your previous draft answer below.\n\n"
+    "Draft:\n{draft}\n\n"
     "IMPORTANT:\n"
-    "- The listed candidates may ALL be flawed. "
-    "Do not assume the correct answer must be among them.\n"
+    "- Your draft may contain errors. Do not assume it is correct.\n"
     "- You may propose a completely new answer if warranted.\n\n"
     "Your task:\n"
-    "1. Identify exactly where candidates AGREE and where they DISAGREE (especially numerical values).\n"
-    "2. For each disagreement, determine the root cause (misinterpretation, calculation error, etc.).\n"
-    "3. IMPORTANT: If there are 'EXTRA INSTRUCTIONS' below requesting research or verification, "
-    "   you MUST use your available tools (search, code execution) to resolve the conflict "
-    "   BEFORE providing your final synthesis. Do NOT rely on intuition if tools can provide facts.\n"
-    "4. Synthesize the strongest final answer based on the evidence found.\n"
-    "5. Explicitly state which candidate was wrong and why."
+    "1. Identify any claims that are uncertain, conflicting, or unverified.\n"
+    "2. If there are EXTRA INSTRUCTIONS below, you MUST follow them using your "
+    "available tools BEFORE providing your final answer. Do NOT rely on intuition "
+    "if tools can provide facts.\n"
+    "3. Produce the strongest final answer based on evidence.\n"
+    "4. Explicitly state any remaining caveats."
+)
+
+COMPACT_FINALIZER_PROMPT = (
+    "The following analysis contains the answer but is too verbose or repetitive.\n\n"
+    "Analysis:\n{analysis}\n\n"
+    "RULES (strict):\n"
+    "- Do NOT include any 'Wait', 'Let me re-check', or self-correction loops.\n"
+    "- Do NOT repeat the final answer more than once.\n"
+    "- Give one concise proof sketch if needed, then state the final answer clearly.\n"
+    "- Maximum length: 800 tokens. Be as concise as possible."
 )
 
 
-def _load_path_config() -> AdaptivePathConfig:
-    cfg = load_config()
-    ap = cfg.get("adaptive_paths", {})
-    return AdaptivePathConfig(**ap)
+def _detect_runaway(text: str) -> Tuple[bool, List[str]]:
+    """Detect final-channel self-doubt loop patterns in a response.
+
+    Returns (is_runaway, list_of_flags).
+    """
+    if not text:
+        return False, []
+
+    flags = []
+    lower = text.lower()
+
+    wait_count = lower.count("wait")
+    if wait_count >= _RUNAWAY_WAIT_THRESHOLD:
+        flags.append(f"self_check_loop:wait_x{wait_count}")
+
+    final_answer_count = lower.count("final answer")
+    if final_answer_count >= _RUNAWAY_FINAL_ANSWER_THRESHOLD:
+        flags.append(f"repeated_final_answer:x{final_answer_count}")
+
+    recheck_count = lower.count("let me re-check") + lower.count("let me recheck")
+    if recheck_count >= 2:
+        flags.append(f"recheck_loop:x{recheck_count}")
+
+    return bool(flags), flags
+
+
+def _compact_final(
+    analysis: str,
+    messages: List[Message],
+    config: ModelConfig,
+) -> GenerationResult:
+    """Regenerate a clean, compact final answer from a runaway response."""
+    prompt = COMPACT_FINALIZER_PROMPT.format(analysis=analysis[:6000])
+    compact_msg = Message(role=Role.USER, content=prompt)
+    return generate_response(
+        messages=messages + [compact_msg],
+        model_name=config.model_name,
+        temperature=0.3,
+        max_tokens=1024,
+        n=1,
+    )[0]
 
 
 def run_instant_pipeline(
@@ -59,43 +113,44 @@ def run_instant_pipeline(
     return results[0]
 
 
-def _run_path_wave(
-    path_specs: list,
-    messages: List[Message],
-    config: ModelConfig,
-) -> List[GenerationResult]:
-    candidates = []
-    for spec in path_specs:
-        role_msg = Message(role=Role.SYSTEM, content=spec.system_prompt)
-        role_messages = [role_msg] + messages
-        batch = generate_response(
-            messages=role_messages,
-            model_name=config.model_name,
-            temperature=PATH_TEMPERATURE,
-            max_tokens=config.max_tokens,
-            n=1,
-        )
-        candidates.extend(batch)
-    return candidates
-
-
-def _synthesize_with_audit(
-    messages: List[Message],
-    candidates: List[GenerationResult],
-    audit_debug: dict,
-    config: ModelConfig,
-    tools: list = None,
-    is_loop: bool = False,
+def run_adaptive_pipeline(
+    messages: List[Message], config: ModelConfig, tools: list = None, is_loop: bool = False
 ) -> Tuple[Union[GenerationResult, ClarificationRequest], dict]:
-    texts = [c.content for c in candidates]
-    total_tokens = sum(c.tokens_used for c in candidates)
-    total_duration = sum(c.duration_sec for c in candidates)
+    """Run the Adaptive Uncertainty-Aware Reasoning pipeline.
 
-    uncertainty_report = audit_debug.get("uncertainty_report")
-    controller_action = audit_debug.get("controller_action", "answer")
+    Four steps:
+    1. Draft a calibrated answer with a metacognitive system prompt.
+    2. Analyze uncertainty of the draft via structured JSON controller.
+    3. Rule engine deterministically selects an action.
+    4. Execute the action: answer | ask user | verify with tools | research | refine.
+       A finalizer pass sanitizes runaway self-doubt loops before returning.
 
-    from src.core.schema import UncertaintyReport
-    report = UncertaintyReport(**uncertainty_report) if uncertainty_report else None
+    Args:
+        messages: Conversation history.
+        config: Model configuration.
+        tools: Optional list of tool definitions.
+        is_loop: Whether this is a retry from a previous clarification.
+
+    Returns:
+        Tuple of (GenerationResult or ClarificationRequest, debug info dict).
+    """
+    debug_info: dict = {}
+
+    # --- Step 1: Draft ---
+    rich.print("  [dim]Drafting calibrated answer...[/dim]")
+    draft_messages = [Message(role=Role.SYSTEM, content=METACOGNITIVE_SYSTEM_PROMPT)] + messages
+    draft = generate_response(
+        messages=draft_messages,
+        model_name=config.model_name,
+        temperature=DRAFT_TEMPERATURE,
+        max_tokens=config.max_tokens,
+        n=1,
+    )[0]
+
+    # --- Step 2: Analyze uncertainty ---
+    rich.print("  [dim]Analyzing uncertainty...[/dim]")
+    report = analyze_uncertainty(messages, [draft], consistency=1.0, config=config)
+    debug_info["uncertainty_report"] = report.model_dump()
 
     last_user_message = ""
     for m in reversed(messages):
@@ -103,50 +158,52 @@ def _synthesize_with_audit(
             last_user_message = m.content
             break
 
-    if report:
-        action = decide_action(report, last_user_message=last_user_message, is_loop=is_loop)
-    else:
-        action = UncertaintyAction.ANSWER
+    # --- Step 3: Rule engine ---
+    action = decide_action(report, last_user_message=last_user_message, is_loop=is_loop)
+    debug_info["controller_action"] = action.value
+    rich.print(f"  [dim]Controller action: [bold]{action.value}[/bold][/dim]")
 
-    rich.print(f"  [dim]Controller recommended action: [bold]{action.value}[/bold][/dim]")
+    # --- Step 4: Execute ---
 
+    # Fast path: return draft directly (with finalizer check)
+    if action in (UncertaintyAction.ANSWER, UncertaintyAction.ANSWER_WITH_CAVEATS):
+        if action == UncertaintyAction.ANSWER_WITH_CAVEATS and report.risk_flags:
+            caveat = f"\n\n> Note: {report.risk_flags[0]}"
+            draft.content = (draft.content or "") + caveat
+        return _apply_finalizer(draft, messages, config, debug_info), debug_info
+
+    # Clarification path
     if action == UncertaintyAction.ASK_USER:
-        rich.print("  [dim bold yellow]Uncertainty triggers Clarification Request...[/dim bold yellow]")
+        rich.print("  [dim yellow]Action: ask user for clarification[/dim yellow]")
         question = (
             report.clarification_questions[0]
-            if report and report.clarification_questions
-            else "Bạn có thể cung cấp thêm ngữ cảnh được không?"
+            if report.clarification_questions
+            else "Could you provide more context?"
         )
         req = ClarificationRequest(
             question=question,
-            default_assumptions=report.assumptions if report else [],
-            fallback_plan=f"Proceed with defaults due to {report.risk_flags[0] if report and report.risk_flags else 'ambiguity'}.",
+            default_assumptions=report.assumptions,
+            fallback_plan=f"Proceed with defaults due to {report.risk_flags[0] if report.risk_flags else 'ambiguity'}.",
         )
-        return req, audit_debug
+        return req, debug_info
 
-    tool_prompt = ""
-    if report:
-        if action == UncertaintyAction.RESEARCH and report.research_questions:
-            tool_prompt = "Please research the following before answering:\n- " + "\n- ".join(report.research_questions)
-        elif action == UncertaintyAction.VERIFY_WITH_TOOL and report.computable_checks:
-            tool_prompt = "Please verify the following using tools before answering:\n- " + "\n- ".join(report.computable_checks)
+    # Refinement path: research / verify / adversarial review
+    rich.print("  [dim yellow]Action: refinement pass[/dim yellow]")
+    debug_info["refinement_triggered"] = True
 
-    rich.print("  [dim bold yellow]Entering Resolution Loop for self-correction & synthesis...[/dim bold yellow]")
-    audit_debug["stage2_triggered"] = True
+    extra_instructions = ""
+    if action == UncertaintyAction.RESEARCH and report.research_questions:
+        extra_instructions = "Please research the following before answering:\n- " + "\n- ".join(report.research_questions)
+    elif action == UncertaintyAction.VERIFY_WITH_TOOL and report.computable_checks:
+        extra_instructions = "Please verify the following using tools before answering:\n- " + "\n- ".join(report.computable_checks)
 
-    unique_ans = "\n\n---\n\n".join(
-        f"Candidate {i + 1}: {t}" for i, t in enumerate(texts)
-    )
-    resolution_prompt = SELF_DOUBT_PROMPT.format(candidates=unique_ans)
+    resolution_content = RESOLUTION_PROMPT.format(draft=draft.content or "")
+    if extra_instructions:
+        resolution_content += f"\n\nEXTRA INSTRUCTIONS:\n{extra_instructions}"
 
-    if tool_prompt:
-        resolution_prompt += f"\n\nEXTRA INSTRUCTIONS:\n{tool_prompt}"
-
-    self_doubt_msg = Message(role=Role.USER, content=resolution_prompt)
-    reflection_messages = messages + [self_doubt_msg]
-
-    final_res = generate_response(
-        messages=reflection_messages,
+    resolution_msg = Message(role=Role.USER, content=resolution_content)
+    refined = generate_response(
+        messages=messages + [resolution_msg],
         model_name=config.model_name,
         temperature=SYNTHESIS_TEMPERATURE,
         max_tokens=config.max_tokens,
@@ -154,155 +211,47 @@ def _synthesize_with_audit(
         tools=tools,
     )[0]
 
-    if action == UncertaintyAction.VERIFY_WITH_TOOL and not getattr(final_res, "tool_calls", None):
-        high_conflict = report and report.claim_conflicts and any(c.severity == "high" for c in report.claim_conflicts)
+    # Guardrail: warn if tool verification was requested but no tool was called
+    if action == UncertaintyAction.VERIFY_WITH_TOOL and not getattr(refined, "tool_calls", None):
+        high_conflict = report.claim_conflicts and any(c.severity == "high" for c in report.claim_conflicts)
         if high_conflict:
             warning = (
                 "⚠️ **UNVERIFIED SYNTHESIS WARNING** ⚠️\n"
-                "I detected severe logical conflicts in my reasoning and attempted to resolve them. "
-                "However, I failed to programmatically verify the result using tools. "
-                "The following explanation is an **unverified hypothesis** and may contain logical or arithmetic errors:\n\n"
-                "---\n\n"
+                "Severe logical conflicts were detected but could not be resolved with tools. "
+                "The following answer is an **unverified hypothesis**:\n\n---\n\n"
             )
-            final_res.content = warning + (final_res.content or "")
+            refined.content = warning + (refined.content or "")
 
-    final_res.tokens_used += total_tokens
-    final_res.duration_sec += total_duration
+    refined.tokens_used += draft.tokens_used
+    refined.duration_sec += draft.duration_sec
 
-    return final_res, audit_debug
+    # Tool calls bypass finalizer — they're not final text yet
+    if getattr(refined, "tool_calls", None):
+        return refined, debug_info
 
-
-def _format_competing_hypotheses(candidates: List[GenerationResult]) -> str:
-    parts = []
-    for i, c in enumerate(candidates):
-        preview = c.content[:300] if c.content else "(empty)"
-        parts.append(f"**Hypothesis {i+1}:**\n{preview}")
-    return "\n\n---\n\n".join(parts)
+    return _apply_finalizer(refined, messages, config, debug_info), debug_info
 
 
-def run_adaptive_pipeline(
-    messages: List[Message], config: ModelConfig, tools: list = None, is_loop: bool = False
-) -> Tuple[Union[GenerationResult, ClarificationRequest], dict]:
-    """Run the Progressive Parallel Paths reasoning pipeline.
+def _apply_finalizer(
+    result: GenerationResult,
+    messages: List[Message],
+    config: ModelConfig,
+    debug_info: dict,
+) -> GenerationResult:
+    """Detect and fix runaway self-doubt loops in the final response text."""
+    is_runaway, flags = _detect_runaway(result.content or "")
+    debug_info["presentation_risk_flags"] = flags
 
-    1. Profile the task to determine complexity and requirements.
-    2. Plan initial paths with diverse objectives.
-    3. Run paths in waves, auditing after each wave.
-    4. Expand with additional paths if audit detects unresolved conflicts.
-    5. Synthesize the final answer with full audit context.
-    """
-    path_config = _load_path_config()
-    debug_info = {
-        "stage1_candidates": [],
-        "consistency": 0.0,
-        "stage2_triggered": False,
-        "path_budget": {},
-        "path_expansion_events": [],
-    }
+    if not is_runaway:
+        return result
 
-    # 1. Profile task
-    rich.print("  [dim]Profiling task complexity...[/dim]")
-    profile = profile_task(messages, config)
-    debug_info["task_profile"] = profile.model_dump()
-    rich.print(f"  [dim]Task profile: complexity={profile.complexity_score:.2f}, exact={profile.requires_exact_answer}, risk={profile.risk_level}[/dim]")
+    rich.print(f"  [dim red]Runaway detected: {', '.join(flags)} — compacting final response[/dim red]")
+    debug_info["compact_finalizer_triggered"] = True
 
-    # 2. Plan initial paths
-    rich.print("  [dim]Planning reasoning paths...[/dim]")
-    path_specs, budget_request = plan_initial_paths(profile, messages, config, path_config)
-    budget = PathBudget(config=path_config)
-    debug_info["initial_path_count"] = len(path_specs)
-    debug_info["path_specs_used"] = [s.model_dump() for s in path_specs]
-    rich.print(f"  [dim]Allocated {len(path_specs)} initial paths (max {path_config.max_paths})[/dim]")
-
-    # 3. Progressive wave loop
-    all_candidates: List[GenerationResult] = []
-    audit_result = None
-    audit_debug = {}
-
-    for wave_idx in range(path_config.max_waves):
-        wave_label = f"Wave {wave_idx + 1}"
-        rich.print(f"  [dim]Running {wave_label}: {len(path_specs)} paths...[/dim]")
-
-        wave_candidates = _run_path_wave(path_specs, messages, config)
-        all_candidates.extend(wave_candidates)
-        budget.consume(wave_candidates)
-
-        texts = [c.content for c in all_candidates]
-        debug_info["stage1_candidates"] = texts
-
-        rich.print(f"  [dim]Auditing {len(all_candidates)} candidates...[/dim]")
-        audit_result, audit_debug = audit_paths(
-            all_candidates, messages, profile, config, path_config
-        )
-        debug_info["consistency"] = audit_debug.get("consistency", 0.0)
-        debug_info.update({k: v for k, v in audit_debug.items() if k != "stage1_candidates"})
-
-        rich.print(
-            f"  [dim]Audit: confidence={audit_result.confidence:.2f}, "
-            f"conflict={audit_result.high_conflict}, "
-            f"stop={audit_result.should_stop}[/dim]"
-        )
-
-        if audit_result.should_stop:
-            rich.print(f"  [dim]Stopping: {audit_result.stop_reason}[/dim]")
-            break
-
-        expand, reason = should_expand_paths(audit_result, budget, path_config)
-        if not expand:
-            rich.print(f"  [dim]No expansion: {reason}[/dim]")
-            break
-
-        rich.print(f"  [dim bold yellow]Expanding paths: {reason}[/dim bold yellow]")
-        path_specs = request_additional_paths(
-            messages, all_candidates, audit_result, budget, config
-        )
-
-        if not path_specs:
-            rich.print("  [dim]No additional paths generated, stopping.[/dim]")
-            break
-
-        debug_info["path_expansion_events"].append({
-            "wave": wave_idx + 2,
-            "from": budget.paths_used - len(path_specs),
-            "added": len(path_specs),
-            "reason": reason,
-        })
-
-    # Record budget summary
-    stop_reason = audit_result.stop_reason if audit_result else "single_wave"
-    debug_info["path_budget"] = {
-        "initial_paths": debug_info.get("initial_path_count", 0),
-        "max_paths": path_config.max_paths,
-        "paths_used": budget.paths_used,
-        "waves_used": budget.waves_used,
-        "stop_reason": stop_reason,
-        "tokens_spent": budget.tokens_spent,
-    }
-
-    # 4. Safety check: budget exhausted with high conflict
-    if (
-        budget.paths_remaining <= 0
-        and audit_result
-        and audit_result.high_conflict
-    ):
-        rich.print("  [dim bold red]Budget exhausted with unresolved conflict.[/dim bold red]")
-        unresolved = GenerationResult(
-            content=(
-                "I could not resolve the conflict within the path budget.\n"
-                "Here are the competing hypotheses and the strongest evidence:\n\n"
-                + _format_competing_hypotheses(all_candidates)
-            ),
-            tokens_used=budget.tokens_spent,
-            duration_sec=sum(c.duration_sec for c in all_candidates),
-        )
-        return unresolved, debug_info
-
-    # 5. Synthesize final answer
-    rich.print("  [dim]Synthesizing final answer...[/dim]")
-    return _synthesize_with_audit(
-        messages, all_candidates, audit_debug, config,
-        tools=tools, is_loop=is_loop,
-    )
+    compact = _compact_final(result.content or "", messages, config)
+    compact.tokens_used += result.tokens_used
+    compact.duration_sec += result.duration_sec
+    return compact
 
 
 def run_pipeline(

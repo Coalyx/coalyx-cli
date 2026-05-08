@@ -18,7 +18,7 @@ DEFAULT_CONFIG = {
         "show_assumptions": True,
     },
     "adaptive_paths": {
-        "enabled": True,
+        "enabled": False,
         "min_paths": 1,
         "default_paths": 3,
         "max_paths": 6,

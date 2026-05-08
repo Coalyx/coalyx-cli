@@ -120,6 +120,11 @@ class UncertaintyReport(BaseModel):
     risk_flags: List[str] = Field(default_factory=list)
     recommended_action: UncertaintyAction = UncertaintyAction.ANSWER
 
+    @property
+    def confidence_score(self) -> float:
+        """Confidence is the inverse of uncertainty. Range [0, 1]."""
+        return max(0.0, 1.0 - self.total_score)
+
 
 class ClarificationRequest(BaseModel):
     question: str

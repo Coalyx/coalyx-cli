@@ -36,14 +36,13 @@ SELF_DOUBT_PROMPT = (
     "Do not assume the correct answer must be among them.\n"
     "- You may propose a completely new answer if warranted.\n\n"
     "Your task:\n"
-    "1. Identify where candidates AGREE and where they DISAGREE.\n"
-    "2. For each disagreement, determine if it is:\n"
-    "   - Factual (verifiable right/wrong)\n"
-    "   - Structural (same idea, different presentation)\n"
-    "   - Perspective-based (valid alternatives)\n"
-    "3. Reject claims that lack reasoning or evidence.\n"
-    "4. Synthesize the strongest final answer.\n"
-    "5. Note important caveats if any."
+    "1. Identify exactly where candidates AGREE and where they DISAGREE (especially numerical values).\n"
+    "2. For each disagreement, determine the root cause (misinterpretation, calculation error, etc.).\n"
+    "3. IMPORTANT: If there are 'EXTRA INSTRUCTIONS' below requesting research or verification, "
+    "   you MUST use your available tools (search, code execution) to resolve the conflict "
+    "   BEFORE providing your final synthesis. Do NOT rely on intuition if tools can provide facts.\n"
+    "4. Synthesize the strongest final answer based on the evidence found.\n"
+    "5. Explicitly state which candidate was wrong and why."
 )
 
 # ---------------------------------------------------------------------------

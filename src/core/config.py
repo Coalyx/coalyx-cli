@@ -16,7 +16,19 @@ DEFAULT_CONFIG = {
         "auto_research_on_uncertainty": True,
         "show_uncertainty_summary": True,
         "show_assumptions": True,
-    }
+    },
+    "adaptive_paths": {
+        "enabled": True,
+        "min_paths": 1,
+        "default_paths": 3,
+        "max_paths": 6,
+        "max_paths_per_wave": 3,
+        "max_waves": 3,
+        "target_confidence": 0.78,
+        "min_marginal_gain": 0.08,
+        "max_total_path_tokens": 8000,
+        "max_final_tokens": 1000,
+    },
 }
 
 def load_config() -> Dict[str, Any]:

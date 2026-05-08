@@ -127,6 +127,94 @@ class ClarificationRequest(BaseModel):
     fallback_plan: str = ""
 
 
+# --- Adaptive Path Schemas ---
+
+class PathMethod(str, Enum):
+    DIRECT_SOLUTION = "direct_solution"
+    FORMAL_PROOF = "formal_proof"
+    COMPUTATIONAL_CHECK = "computational_check"
+    ADVERSARIAL_CRITIC = "adversarial_critic"
+    EDGE_CASE_SEARCH = "edge_case_search"
+    SOURCE_GROUNDING = "source_grounding"
+    RESEARCH = "research"
+    IMPLEMENTATION_TEST = "implementation_test"
+
+
+class PathSpec(BaseModel):
+    id: str
+    objective: str
+    method: PathMethod
+    system_prompt: str
+    allowed_tools: List[str] = Field(default_factory=list)
+
+
+class TaskProfile(BaseModel):
+    complexity_score: float = 0.5
+    requires_exact_answer: bool = False
+    tool_resolvable: bool = False
+    ambiguity_type: str = "none"
+    risk_level: str = "low"
+
+
+class PathBudgetRequest(BaseModel):
+    initial_paths: int = 3
+    max_desired_paths: int = 6
+    reason: str = ""
+    diversity_plan: List[str] = Field(default_factory=list)
+    stop_condition: str = ""
+
+
+class PathAuditResult(BaseModel):
+    confidence: float = 0.0
+    answer_agreement: bool = False
+    high_conflict: bool = False
+    conflict_is_tool_resolvable: bool = False
+    requires_exact_answer: bool = False
+    answer_disagreement: bool = False
+    verified_answer_found: bool = False
+    should_stop: bool = False
+    should_expand: bool = False
+    stop_reason: str = ""
+    expansion_reason: str = ""
+
+
+class AdaptivePathConfig(BaseModel):
+    enabled: bool = True
+    min_paths: int = 1
+    default_paths: int = 3
+    max_paths: int = 6
+    max_waves: int = 3
+    max_paths_per_wave: int = 3
+    target_confidence: float = 0.78
+    min_marginal_gain: float = 0.08
+    max_total_path_tokens: int = 8192
+    max_final_tokens: int = 1024
+
+
+class PathBudget(BaseModel):
+    config: AdaptivePathConfig = Field(default_factory=AdaptivePathConfig)
+    paths_used: int = 0
+    tokens_spent: int = 0
+    waves_used: int = 0
+
+    @property
+    def paths_remaining(self) -> int:
+        return self.config.max_paths - self.paths_used
+
+    @property
+    def tokens_remaining(self) -> int:
+        return self.config.max_total_path_tokens - self.tokens_spent
+
+    @property
+    def min_tokens_per_path(self) -> int:
+        return self.config.max_total_path_tokens // max(self.config.max_paths, 1)
+
+    def consume(self, candidates: List["GenerationResult"]) -> None:
+        self.paths_used += len(candidates)
+        self.tokens_spent += sum(c.tokens_used for c in candidates)
+        self.waves_used += 1
+
+
 # --- Monitor Schemas ---
 
 class MonitorStats(BaseModel):

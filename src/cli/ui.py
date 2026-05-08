@@ -42,17 +42,17 @@ def print_welcome():
 
 def print_error(msg: str):
     """Display an error message."""
-    console.print(f"[bold red]✗ Error:[/bold red] {msg}")
+    console.print(f"[bold red]Error:[/bold red] {msg}")
 
 
 def print_warning(msg: str):
     """Display a warning message."""
-    console.print(f"[bold yellow]⚠ Warning:[/bold yellow] {msg}")
+    console.print(f"[bold yellow]Warning:[/bold yellow] {msg}")
 
 
 def print_info(msg: str):
     """Display an informational message."""
-    console.print(f"[dim cyan]ℹ {msg}[/dim cyan]")
+    console.print(f"[dim cyan]{msg}[/dim cyan]")
 
 
 def render_memory_bar(budget: ContextBudget) -> Text:
@@ -171,7 +171,7 @@ def print_debug_info(debug_info: dict):
     stage2 = debug_info.get("stage2_triggered", False)
 
     msg = Text()
-    msg.append("  ◈ ", style="dim")
+    msg.append("  - ", style="dim")
     msg.append(f"Consistency: {consistency:.2f}", style="dim")
     msg.append(" │ ", style="dim")
 

@@ -139,6 +139,21 @@ def ensure_initialized():
             global_mcp.write_text(json.dumps(default_mcp, indent=2), encoding="utf-8")
             
     setup_global_venv(coalyx_dir)
+    
+    try:
+        from src.core.jupyter import ensure_jupyter_running
+        j_url, j_token = ensure_jupyter_running(coalyx_dir)
+        
+        if global_mcp.exists():
+            mcp_data = json.loads(global_mcp.read_text(encoding="utf-8"))
+            if "mcpServers" in mcp_data and "jupyter" in mcp_data["mcpServers"]:
+                m_env = mcp_data["mcpServers"]["jupyter"].get("env", {})
+                m_env["JUPYTER_URL"] = j_url
+                m_env["JUPYTER_TOKEN"] = j_token
+                mcp_data["mcpServers"]["jupyter"]["env"] = m_env
+                global_mcp.write_text(json.dumps(mcp_data, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
 def interactive_setup():
     """Prompt user for essential API keys."""
@@ -163,7 +178,7 @@ def _build_confirmation_callback():
 
     def _confirm(tool_name: str, kwargs: dict, danger_level: str) -> bool:
         if danger_level == DANGER_HIGH:
-            console.print(f"\n  [bold red]⚠ DANGEROUS TOOL:[/bold red] [bold]{tool_name}[/bold]")
+            console.print(f"\n  [bold red]DANGEROUS TOOL:[/bold red] [bold]{tool_name}[/bold]")
             # Show the command/code being executed
             if tool_name in ("bash", "powershell"):
                 console.print(f"  [dim]Command:[/dim] {kwargs.get('command', '?')}")
@@ -172,7 +187,7 @@ def _build_confirmation_callback():
                 preview = code[:200] + ("..." if len(code) > 200 else "")
                 console.print(f"  [dim]Code:[/dim] {preview}")
         elif danger_level == DANGER_MEDIUM:
-            console.print(f"\n  [bold yellow]⚠ File operation:[/bold yellow] [bold]{tool_name}[/bold]")
+            console.print(f"\n  [bold yellow]File operation:[/bold yellow] [bold]{tool_name}[/bold]")
             if "filepath" in kwargs:
                 console.print(f"  [dim]Path:[/dim] {kwargs['filepath']}")
 
@@ -468,7 +483,7 @@ def main(
                 
                 # Get non-blocking input
                 try:
-                    clarification = _read_user_input(prefix=HTML("<b><ansiyellow>❯</ansiyellow> </b>"))
+                    clarification = _read_user_input(prefix=HTML("<b><ansiyellow>></ansiyellow> </b>"))
                 except EOFError:
                     clarification = ""
                     

@@ -130,7 +130,7 @@ def run_adaptive_pipeline(
         "stage2_triggered": False,
     }
 
-    rich.print("  [dim]◈ Sampling internal reasoning paths...[/dim]")
+    rich.print("  [dim]Sampling internal reasoning paths...[/dim]")
     # Note: Tools are intentionally NOT passed here. Stage 1 candidates are
     # only used for semantic uncertainty measurement, not for execution.
     candidates = []
@@ -153,7 +153,7 @@ def run_adaptive_pipeline(
     debug_info["stage1_candidates"] = texts
 
     # MEASURE UNCERTAINTY
-    rich.print("  [dim]◈ Measuring semantic consistency...[/dim]")
+    rich.print("  [dim]Measuring semantic consistency...[/dim]")
     try:
         consistency_result = calculate_group_consistency(texts)
         consistency = consistency_result.score
@@ -166,7 +166,7 @@ def run_adaptive_pipeline(
         consistency = _lexical_group_consistency(texts)
         debug_info["embedding_error"] = str(e)
         debug_info["consistency_method"] = "lexical_fallback"
-        rich.print(f"  [dim yellow]◈ Embedding failed, using lexical fallback (score={consistency:.2f})[/dim yellow]")
+        rich.print(f"  [dim yellow]Embedding failed, using lexical fallback (score={consistency:.2f})[/dim yellow]")
         # Create a dummy result for fallback
         from src.core.schema import ConsistencyResult
         consistency_result = ConsistencyResult(score=consistency)
@@ -174,15 +174,15 @@ def run_adaptive_pipeline(
     debug_info["consistency"] = consistency
 
     # STAGE 2: UNCERTAINTY ANALYSIS
-    rich.print("  [dim]◈ Analyzing uncertainty structured report...[/dim]")
+    rich.print("  [dim]Analyzing uncertainty structured report...[/dim]")
     report = analyze_uncertainty(messages, candidates, consistency, config)
     debug_info["uncertainty_report"] = report.model_dump()
     action = decide_action(report)
     
-    rich.print(f"  [dim]◈ Controller recommended action: [bold]{action.value}[/bold][/dim]")
+    rich.print(f"  [dim]Controller recommended action: [bold]{action.value}[/bold][/dim]")
     
     if action == UncertaintyAction.ASK_USER:
-        rich.print("  [dim bold yellow]◈ Uncertainty triggers Clarification Request...[/dim bold yellow]")
+        rich.print("  [dim bold yellow]Uncertainty triggers Clarification Request...[/dim bold yellow]")
         question = (report.clarification_questions[0] 
                     if report.clarification_questions else "Bạn có thể cung cấp thêm ngữ cảnh được không?")
         req = ClarificationRequest(
@@ -200,7 +200,7 @@ def run_adaptive_pipeline(
         tool_prompt = "Please verify the following using tools before answering:\n- " + "\n- ".join(report.computable_checks)
 
     # STAGE 3: Self-Doubt / Synthesis Activation
-    rich.print("  [dim bold yellow]◈ Entering Resolution Loop for self-correction & synthesis...[/dim bold yellow]")
+    rich.print("  [dim bold yellow]Entering Resolution Loop for self-correction & synthesis...[/dim bold yellow]")
     debug_info["stage2_triggered"] = True
 
     unique_ans = "\n\n---\n\n".join(
@@ -269,7 +269,7 @@ def run_pipeline(
             messages.append(assistant_msg)
             
             for tc in res.tool_calls:
-                rich.print(f"  [dim]⚡ Executing tool: [bold]{tc.name}[/bold]...[/dim]")
+                rich.print(f"  [dim]Executing tool: [bold]{tc.name}[/bold]...[/dim]")
                 try:
                     args = json.loads(tc.arguments) if isinstance(tc.arguments, str) else tc.arguments
                 except:

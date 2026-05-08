@@ -13,7 +13,7 @@ REQUIRED_PACKAGES = [
     "statsmodels", "scikit-learn", "matplotlib", "seaborn",
     "plotly", "networkx", "numba", "openpyxl", "xlsxwriter",
     "python-dateutil", "pytz", "tqdm", "requests",
-    "beautifulsoup4", "lxml", "pydantic"
+    "beautifulsoup4", "lxml", "pydantic", "jupyterlab"
 ]
 
 def get_venv_dir(coalyx_dir: Path) -> Path:
@@ -65,7 +65,7 @@ def setup_global_venv(coalyx_dir: Path) -> None:
                 [str(python_exe), "-m", "pip", "install"] + REQUIRED_PACKAGES,
                 check=True, capture_output=True
             )
-            console.print("[bold green]✔ Global environment ready![/bold green]")
+            console.print("[bold green]Global environment ready![/bold green]")
         except subprocess.CalledProcessError as e:
             console.print("[bold red]Failed to install packages.[/bold red]")
             if e.stderr:

@@ -175,21 +175,21 @@ def decide_action(report: UncertaintyReport) -> UncertaintyAction:
     ):
         return UncertaintyAction.ASK_USER
 
-    # PRIORITY 3: High-severity logical conflicts — adversarial review
-    if report.claim_conflicts and any(
-        c.severity == "high" for c in report.claim_conflicts
-    ):
-        return UncertaintyAction.ADVERSARIAL_REVIEW
-
-    # PRIORITY 4: Researchable questions — external research
+    # PRIORITY 3: Researchable questions — external research
     if report.research_questions and any(
         u.researchable for u in report.unknowns
     ):
         return UncertaintyAction.RESEARCH
 
-    # PRIORITY 5: Computationally verifiable — tool verification
+    # PRIORITY 4: Computationally verifiable — tool verification
     if report.computable_checks:
         return UncertaintyAction.VERIFY_WITH_TOOL
+
+    # PRIORITY 5: High-severity logical conflicts — adversarial review
+    if report.claim_conflicts and any(
+        c.severity == "high" for c in report.claim_conflicts
+    ):
+        return UncertaintyAction.ADVERSARIAL_REVIEW
 
     # PRIORITY 6: Low uncertainty — answer directly
     if report.total_score <= 0.3 or report.semantic_agreement >= 0.85:
